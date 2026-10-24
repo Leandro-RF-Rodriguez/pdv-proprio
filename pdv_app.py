@@ -1,7 +1,8 @@
 """PDV Próprio — aplicativo de desktop.
 
 Janela feita com CustomTkinter, conversando direto com o banco SQLite
-pela camada em banco.py. Visual inspirado no design (verde, clean, Manrope).
+pela camada em banco.py. Visual inspirado no design (verde, clean, Manrope):
+tela de Venda com catálogo em cartões à esquerda e checkout à direita.
 
 Rodar com:  python3 pdv_app.py
 """
@@ -19,15 +20,15 @@ import sync
 ctk.set_appearance_mode("light")
 
 FORMAS_PAGAMENTO = ["Dinheiro", "Cartão", "Pix"]
-FONTE = "Manrope"  # usa Manrope se instalada; senão, a fonte padrão do sistema
+FONTE = "Manrope"
 
-# Paleta extraída do design do Figma
 P = {
     "primary": "#173f35",
     "primary_strong": "#0d2c25",
     "primary_soft": "#d8efe0",
     "accent": "#a9c95d",
     "accent_strong": "#52712f",
+    "accent_soft": "#eaf3d8",
     "success": "#34755f",
     "text": "#18342d",
     "muted": "#728079",
@@ -43,20 +44,19 @@ class AppPDV(ctk.CTk):
     def __init__(self):
         super().__init__()
         self.title("PDV Próprio")
-        self.geometry("1000x690")
-        self.minsize(840, 560)
+        self.geometry("1040x700")
+        self.minsize(880, 580)
         self.configure(fg_color=P["canvas"])
 
         self.carrinho = []
         self.produto_sel_id = None
+        self.forma_venda = "Dinheiro"
 
         self._estilizar_tabelas()
-
         self.grid_columnconfigure(1, weight=1)
         self.grid_rowconfigure(0, weight=1)
 
         self._montar_barra_lateral()
-
         self.area = ctk.CTkFrame(self, corner_radius=0, fg_color="transparent")
         self.area.grid(row=0, column=1, sticky="nsew", padx=24, pady=24)
 
@@ -90,14 +90,6 @@ class AppPDV(ctk.CTk):
             font=self._fonte(13),
         )
 
-    def _option(self, parent, valores, width=140):
-        return ctk.CTkOptionMenu(
-            parent, values=valores, width=width, corner_radius=10,
-            fg_color=P["primary"], button_color=P["primary_strong"],
-            button_hover_color=P["primary_strong"], text_color="#ffffff",
-            font=self._fonte(13, True),
-        )
-
     def _estilizar_tabelas(self):
         estilo = ttk.Style()
         try:
@@ -112,11 +104,7 @@ class AppPDV(ctk.CTk):
             "Treeview.Heading", background=P["primary_soft"], foreground=P["primary"],
             relief="flat", font=(FONTE, 10, "bold"), padding=6,
         )
-        estilo.map(
-            "Treeview",
-            background=[("selected", P["primary_soft"])],
-            foreground=[("selected", P["primary"])],
-        )
+        estilo.map("Treeview", background=[("selected", P["primary_soft"])], foreground=[("selected", P["primary"])])
         estilo.map("Treeview.Heading", background=[("active", P["primary_soft"])])
 
     def _titulo(self, texto):
@@ -130,11 +118,10 @@ class AppPDV(ctk.CTk):
 
         marca = ctk.CTkFrame(barra, fg_color="transparent")
         marca.pack(padx=20, pady=(26, 22), anchor="w")
-        selo = ctk.CTkLabel(
+        ctk.CTkLabel(
             marca, text="PDV", width=46, height=46, corner_radius=13,
             fg_color=P["accent"], text_color=P["primary_strong"], font=self._fonte(15, True),
-        )
-        selo.pack(side="left")
+        ).pack(side="left")
         textos = ctk.CTkFrame(marca, fg_color="transparent")
         textos.pack(side="left", padx=(10, 0))
         ctk.CTkLabel(textos, text="PDV Próprio", text_color="#ffffff", font=self._fonte(15, True)).pack(anchor="w")
@@ -188,18 +175,234 @@ class AppPDV(ctk.CTk):
             return None
 
     # ==================================================================
+    # Tela de Venda  (catálogo em cartões + checkout)
+    # ==================================================================
+    def mostrar_vendas(self):
+        self._limpar_area()
+        self.carrinho = []
+        self.forma_venda = "Dinheiro"
+        self.produtos_venda = banco.listar_produtos()
+
+        self.area.grid_columnconfigure(0, weight=1)
+        self.area.grid_columnconfigure(1, weight=0)
+        self.area.grid_rowconfigure(1, weight=1)
+
+        sessao = banco.sessao_aberta()
+        cabecalho = "Venda" if sessao else "Venda  (caixa fechado)"
+        self._titulo(cabecalho).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 14))
+
+        # ---- Catálogo (esquerda) ----
+        catalogo = ctk.CTkFrame(self.area, fg_color="transparent")
+        catalogo.grid(row=1, column=0, sticky="nsew", padx=(0, 16))
+        catalogo.grid_columnconfigure(0, weight=1)
+        catalogo.grid_rowconfigure(1, weight=1)
+
+        busca = self._card(catalogo)
+        busca.grid(row=0, column=0, sticky="ew", pady=(0, 12))
+        busca.grid_columnconfigure(0, weight=1)
+        self.campo_venda_cod = self._entry(busca, "Ler código de barras ou buscar produto…")
+        self.campo_venda_cod.grid(row=0, column=0, padx=(14, 6), pady=12, sticky="ew")
+        self.campo_venda_cod.bind("<Return>", lambda e: self.adicionar_por_codigo())
+        self.campo_venda_cod.bind("<KeyRelease>", lambda e: self._desenhar_catalogo(self.campo_venda_cod.get()))
+        self._btn(busca, "Adicionar", self.adicionar_por_codigo, width=110).grid(row=0, column=1, padx=(6, 14), pady=12)
+
+        self.grade = ctk.CTkScrollableFrame(catalogo, fg_color="transparent")
+        self.grade.grid(row=1, column=0, sticky="nsew")
+        for i in range(3):
+            self.grade.grid_columnconfigure(i, weight=1, uniform="cards")
+        self._desenhar_catalogo()
+
+        # ---- Checkout (direita) ----
+        self.checkout = self._card(self.area)
+        self.checkout.configure(width=350)
+        self.checkout.grid(row=1, column=1, sticky="nsew")
+        self.checkout.grid_propagate(False)
+        self.checkout.grid_columnconfigure(0, weight=1)
+        self.checkout.grid_rowconfigure(1, weight=1)
+
+        ctk.CTkLabel(self.checkout, text="Venda atual", font=self._fonte(16, True), text_color=P["text"]).grid(
+            row=0, column=0, padx=16, pady=(16, 8), sticky="w"
+        )
+
+        self.lista_carrinho = ctk.CTkScrollableFrame(self.checkout, fg_color="transparent")
+        self.lista_carrinho.grid(row=1, column=0, sticky="nsew", padx=10)
+        self.lista_carrinho.grid_columnconfigure(0, weight=1)
+
+        rodape = ctk.CTkFrame(self.checkout, fg_color="transparent")
+        rodape.grid(row=2, column=0, sticky="ew", padx=16, pady=(8, 16))
+        rodape.grid_columnconfigure((0, 1, 2), weight=1)
+
+        ctk.CTkLabel(rodape, text="Forma de pagamento", font=self._fonte(11), text_color=P["muted"]).grid(
+            row=0, column=0, columnspan=3, sticky="w", pady=(0, 6)
+        )
+        self.botoes_forma = {}
+        for i, forma in enumerate(FORMAS_PAGAMENTO):
+            b = ctk.CTkButton(
+                rodape, text=forma, width=70, corner_radius=10, font=self._fonte(11, True),
+                command=lambda f=forma: self._selecionar_forma(f),
+            )
+            b.grid(row=1, column=i, padx=2, pady=(0, 14), sticky="ew")
+            self.botoes_forma[forma] = b
+        self._selecionar_forma(self.forma_venda)
+
+        self.label_total = ctk.CTkLabel(rodape, text="R$ 0,00", font=self._fonte(26, True), text_color=P["primary"])
+        self.label_total.grid(row=2, column=0, columnspan=3, sticky="e", pady=(0, 10))
+
+        self._btn(rodape, "Finalizar venda", self.finalizar_venda, "primario", 200).grid(
+            row=3, column=0, columnspan=3, sticky="ew"
+        )
+
+        self.campo_venda_cod.focus()
+        self._redesenhar_carrinho()
+
+    def _desenhar_catalogo(self, filtro=""):
+        for w in self.grade.winfo_children():
+            w.destroy()
+        termo = filtro.strip().lower()
+        prods = [
+            p for p in self.produtos_venda
+            if termo in p["descricao"].lower() or (p["codigo"] or "").startswith(filtro.strip())
+        ] if termo else self.produtos_venda
+
+        if not prods:
+            ctk.CTkLabel(self.grade, text="Nenhum produto.", text_color=P["muted"], font=self._fonte(12)).grid(
+                row=0, column=0, pady=24
+            )
+            return
+        for idx, p in enumerate(prods):
+            card = ctk.CTkButton(
+                self.grade,
+                text=f"{p['descricao']}\nR$ {banco.formatar_reais(p['preco_centavos'])}",
+                command=lambda pr=p: self._adicionar_ao_carrinho(pr),
+                fg_color="#ffffff", hover_color=P["primary_soft"], text_color=P["text"],
+                border_width=1, border_color=P["border"], corner_radius=15, height=78,
+                font=self._fonte(12, True),
+            )
+            card.grid(row=idx // 3, column=idx % 3, padx=6, pady=6, sticky="nsew")
+
+    def _selecionar_forma(self, forma):
+        self.forma_venda = forma
+        for f, b in self.botoes_forma.items():
+            if f == forma:
+                b.configure(fg_color=P["primary"], text_color="#ffffff", hover_color=P["primary_strong"], border_width=0)
+            else:
+                b.configure(fg_color=P["surface"], text_color=P["muted"], hover_color=P["primary_soft"], border_width=1, border_color=P["border"])
+
+    def _adicionar_ao_carrinho(self, produto):
+        for item in self.carrinho:
+            if item["produto_id"] == produto["id"]:
+                item["quantidade"] += 1
+                self._redesenhar_carrinho()
+                return
+        self.carrinho.append(
+            {
+                "produto_id": produto["id"],
+                "descricao": produto["descricao"],
+                "quantidade": 1,
+                "preco_unit_centavos": produto["preco_centavos"],
+            }
+        )
+        self._redesenhar_carrinho()
+
+    def adicionar_por_codigo(self):
+        codigo = self.campo_venda_cod.get().strip()
+        if not codigo:
+            return
+        produto = banco.buscar_produto_por_codigo(codigo)
+        if produto:
+            self._adicionar_ao_carrinho(produto)
+            self.campo_venda_cod.delete(0, tk.END)
+            self._desenhar_catalogo()
+        self.campo_venda_cod.focus()
+
+    def _alterar_qtd(self, item, delta):
+        item["quantidade"] += delta
+        if item["quantidade"] <= 0:
+            self.carrinho.remove(item)
+        self._redesenhar_carrinho()
+
+    def remover_item(self, item):
+        self.carrinho.remove(item)
+        self._redesenhar_carrinho()
+
+    def _total_centavos(self):
+        return sum(round(i["quantidade"] * i["preco_unit_centavos"]) for i in self.carrinho)
+
+    def _redesenhar_carrinho(self):
+        for w in self.lista_carrinho.winfo_children():
+            w.destroy()
+
+        if not self.carrinho:
+            ctk.CTkLabel(
+                self.lista_carrinho, text="Carrinho vazio\nToque num produto para adicionar",
+                text_color=P["muted"], font=self._fonte(12),
+            ).grid(row=0, column=0, pady=40)
+        else:
+            for idx, item in enumerate(self.carrinho):
+                sub = round(item["quantidade"] * item["preco_unit_centavos"])
+                linha = ctk.CTkFrame(self.lista_carrinho, fg_color="#ffffff", corner_radius=12,
+                                     border_width=1, border_color=P["border"])
+                linha.grid(row=idx, column=0, sticky="ew", pady=5)
+                linha.grid_columnconfigure(1, weight=1)
+
+                ctk.CTkLabel(linha, text=item["descricao"], font=self._fonte(12, True), text_color=P["text"], anchor="w").grid(
+                    row=0, column=0, columnspan=3, padx=12, pady=(10, 2), sticky="w"
+                )
+
+                ctrl = ctk.CTkFrame(linha, fg_color="transparent")
+                ctrl.grid(row=1, column=0, padx=10, pady=(0, 10), sticky="w")
+                ctk.CTkButton(ctrl, text="−", width=26, height=24, corner_radius=8, fg_color=P["primary_soft"],
+                              text_color=P["primary"], hover_color=P["accent_soft"], font=self._fonte(13, True),
+                              command=lambda it=item: self._alterar_qtd(it, -1)).pack(side="left")
+                ctk.CTkLabel(ctrl, text=f"{item['quantidade']:g}", width=32, font=self._fonte(12, True), text_color=P["text"]).pack(side="left", padx=2)
+                ctk.CTkButton(ctrl, text="+", width=26, height=24, corner_radius=8, fg_color=P["primary_soft"],
+                              text_color=P["primary"], hover_color=P["accent_soft"], font=self._fonte(13, True),
+                              command=lambda it=item: self._alterar_qtd(it, 1)).pack(side="left")
+
+                direita = ctk.CTkFrame(linha, fg_color="transparent")
+                direita.grid(row=1, column=2, padx=10, pady=(0, 10), sticky="e")
+                ctk.CTkLabel(direita, text=f"R$ {banco.formatar_reais(sub)}", font=self._fonte(12, True), text_color=P["primary"]).pack(side="left", padx=(0, 6))
+                ctk.CTkButton(direita, text="✕", width=26, height=24, corner_radius=8, fg_color="transparent",
+                              text_color=P["danger"], hover_color=P["primary_soft"], font=self._fonte(12, True),
+                              command=lambda it=item: self.remover_item(it)).pack(side="left")
+
+        self.label_total.configure(text=f"R$ {banco.formatar_reais(self._total_centavos())}")
+
+    def finalizar_venda(self):
+        if not self.carrinho:
+            messagebox.showwarning("Carrinho vazio", "Adicione pelo menos um produto.")
+            return
+        total = self._total_centavos()
+        sessao = banco.sessao_aberta()
+        sessao_id = sessao["id"] if sessao else None
+        pagamentos = [{"forma": self.forma_venda, "valor_centavos": total}]
+        try:
+            venda_id, total_gravado = banco.registrar_venda(self.carrinho, pagamentos, sessao_id)
+        except Exception as erro:
+            messagebox.showerror("Erro", f"Não foi possível registrar a venda.\n{erro}")
+            return
+        messagebox.showinfo(
+            "Venda registrada",
+            f"Venda #{venda_id} concluída.\nTotal: R$ {banco.formatar_reais(total_gravado)}",
+        )
+        self.carrinho = []
+        self._redesenhar_carrinho()
+        self.campo_venda_cod.focus()
+
+    # ==================================================================
     # Tela de Produtos (cadastrar, editar, excluir)
     # ==================================================================
     def mostrar_produtos(self):
         self._limpar_area()
         self.produto_sel_id = None
         self.area.grid_columnconfigure(0, weight=1)
+        self.area.grid_columnconfigure(1, weight=0)
         self.area.grid_rowconfigure(2, weight=1)
 
-        self._titulo("Produtos").grid(row=0, column=0, sticky="w", pady=(0, 14))
+        self._titulo("Produtos").grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 14))
 
         form = self._card(self.area)
-        form.grid(row=1, column=0, sticky="ew", pady=(0, 14))
+        form.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(0, 14))
         form.grid_columnconfigure(0, weight=3)
         form.grid_columnconfigure(1, weight=2)
         form.grid_columnconfigure(2, weight=1)
@@ -336,158 +539,12 @@ class AppPDV(ctk.CTk):
             )
 
     # ==================================================================
-    # Tela de Venda
-    # ==================================================================
-    def mostrar_vendas(self):
-        self._limpar_area()
-        self.carrinho = []
-        self.area.grid_columnconfigure(0, weight=1)
-        self.area.grid_rowconfigure(2, weight=1)
-
-        sessao = banco.sessao_aberta()
-        cabecalho = "Venda" if sessao else "Venda  (caixa fechado)"
-        self._titulo(cabecalho).grid(row=0, column=0, sticky="w", pady=(0, 14))
-
-        controles = self._card(self.area)
-        controles.grid(row=1, column=0, sticky="ew", pady=(0, 14))
-        controles.grid_columnconfigure(1, weight=2)
-        controles.grid_columnconfigure(3, weight=2)
-
-        ctk.CTkLabel(controles, text="Código:", text_color=P["text"], font=self._fonte(12)).grid(row=0, column=0, padx=(14, 4), pady=14)
-        self.campo_venda_cod = self._entry(controles, "Leia ou digite o código")
-        self.campo_venda_cod.grid(row=0, column=1, padx=4, pady=14, sticky="ew")
-        self.campo_venda_cod.bind("<Return>", lambda e: self.adicionar_por_codigo())
-
-        self.produtos_venda = banco.listar_produtos()
-        nomes = [p["descricao"] for p in self.produtos_venda] or ["(sem produtos)"]
-        ctk.CTkLabel(controles, text="ou:", text_color=P["muted"], font=self._fonte(12)).grid(row=0, column=2, padx=(16, 4), pady=14)
-        self.sel_produto = self._option(controles, nomes)
-        self.sel_produto.grid(row=0, column=3, padx=4, pady=14, sticky="ew")
-        self._btn(controles, "Adicionar", self.adicionar_por_nome, width=110).grid(row=0, column=4, padx=(4, 14), pady=14)
-
-        colunas = ("descricao", "qtd", "unit", "subtotal")
-        self.tabela_venda = ttk.Treeview(self.area, columns=colunas, show="headings")
-        self.tabela_venda.heading("descricao", text="Produto")
-        self.tabela_venda.heading("qtd", text="Qtd")
-        self.tabela_venda.heading("unit", text="Unitário (R$)")
-        self.tabela_venda.heading("subtotal", text="Subtotal (R$)")
-        self.tabela_venda.column("descricao", width=380)
-        self.tabela_venda.column("qtd", width=70, anchor="center")
-        self.tabela_venda.column("unit", width=120, anchor="e")
-        self.tabela_venda.column("subtotal", width=130, anchor="e")
-        self.tabela_venda.grid(row=2, column=0, sticky="nsew")
-        rol = ttk.Scrollbar(self.area, orient="vertical", command=self.tabela_venda.yview)
-        self.tabela_venda.configure(yscrollcommand=rol.set)
-        rol.grid(row=2, column=1, sticky="ns")
-
-        rodape = self._card(self.area)
-        rodape.grid(row=3, column=0, sticky="ew", pady=(14, 0))
-        rodape.grid_columnconfigure(1, weight=1)
-
-        self._btn(rodape, "Remover item", self.remover_item, "secundario", 120).grid(row=0, column=0, padx=14, pady=14)
-
-        self.label_total = ctk.CTkLabel(rodape, text="Total: R$ 0,00", font=self._fonte(22, True), text_color=P["primary"])
-        self.label_total.grid(row=0, column=1, padx=12, pady=14, sticky="e")
-
-        self.sel_forma = self._option(rodape, FORMAS_PAGAMENTO, width=130)
-        self.sel_forma.grid(row=0, column=2, padx=6, pady=14)
-
-        self._btn(rodape, "Finalizar venda", self.finalizar_venda, "primario", 150).grid(row=0, column=3, padx=(6, 14), pady=14)
-
-        self.campo_venda_cod.focus()
-        self.atualizar_carrinho()
-
-    def _adicionar_ao_carrinho(self, produto):
-        for item in self.carrinho:
-            if item["produto_id"] == produto["id"]:
-                item["quantidade"] += 1
-                self.atualizar_carrinho()
-                return
-        self.carrinho.append(
-            {
-                "produto_id": produto["id"],
-                "descricao": produto["descricao"],
-                "quantidade": 1,
-                "preco_unit_centavos": produto["preco_centavos"],
-            }
-        )
-        self.atualizar_carrinho()
-
-    def adicionar_por_codigo(self):
-        codigo = self.campo_venda_cod.get().strip()
-        if not codigo:
-            return
-        produto = banco.buscar_produto_por_codigo(codigo)
-        if not produto:
-            messagebox.showwarning("Não encontrado", f"Nenhum produto com o código {codigo}.")
-        else:
-            self._adicionar_ao_carrinho(produto)
-        self.campo_venda_cod.delete(0, tk.END)
-        self.campo_venda_cod.focus()
-
-    def adicionar_por_nome(self):
-        if not self.produtos_venda:
-            return
-        nome = self.sel_produto.get()
-        produto = next((p for p in self.produtos_venda if p["descricao"] == nome), None)
-        if produto:
-            self._adicionar_ao_carrinho(produto)
-
-    def remover_item(self):
-        selecao = self.tabela_venda.selection()
-        if not selecao:
-            return
-        indice = self.tabela_venda.index(selecao[0])
-        del self.carrinho[indice]
-        self.atualizar_carrinho()
-
-    def _total_centavos(self):
-        return sum(round(i["quantidade"] * i["preco_unit_centavos"]) for i in self.carrinho)
-
-    def atualizar_carrinho(self):
-        for linha in self.tabela_venda.get_children():
-            self.tabela_venda.delete(linha)
-        for item in self.carrinho:
-            subtotal = round(item["quantidade"] * item["preco_unit_centavos"])
-            self.tabela_venda.insert(
-                "",
-                tk.END,
-                values=(
-                    item["descricao"],
-                    f"{item['quantidade']:g}",
-                    banco.formatar_reais(item["preco_unit_centavos"]),
-                    banco.formatar_reais(subtotal),
-                ),
-            )
-        self.label_total.configure(text=f"Total: R$ {banco.formatar_reais(self._total_centavos())}")
-
-    def finalizar_venda(self):
-        if not self.carrinho:
-            messagebox.showwarning("Carrinho vazio", "Adicione pelo menos um produto.")
-            return
-        total = self._total_centavos()
-        sessao = banco.sessao_aberta()
-        sessao_id = sessao["id"] if sessao else None
-        pagamentos = [{"forma": self.sel_forma.get(), "valor_centavos": total}]
-        try:
-            venda_id, total_gravado = banco.registrar_venda(self.carrinho, pagamentos, sessao_id)
-        except Exception as erro:
-            messagebox.showerror("Erro", f"Não foi possível registrar a venda.\n{erro}")
-            return
-        messagebox.showinfo(
-            "Venda registrada",
-            f"Venda #{venda_id} concluída.\nTotal: R$ {banco.formatar_reais(total_gravado)}",
-        )
-        self.carrinho = []
-        self.atualizar_carrinho()
-        self.campo_venda_cod.focus()
-
-    # ==================================================================
     # Tela de Caixa
     # ==================================================================
     def mostrar_caixa(self):
         self._limpar_area()
         self.area.grid_columnconfigure(0, weight=1)
+        self.area.grid_columnconfigure(1, weight=0)
         self._titulo("Caixa").grid(row=0, column=0, sticky="w", pady=(0, 14))
 
         sessao = banco.sessao_aberta()
@@ -593,6 +650,7 @@ class AppPDV(ctk.CTk):
     def mostrar_historico(self):
         self._limpar_area()
         self.area.grid_columnconfigure(0, weight=1)
+        self.area.grid_columnconfigure(1, weight=0)
         self.area.grid_rowconfigure(1, weight=1)
 
         self._titulo("Histórico de vendas").grid(row=0, column=0, sticky="w", pady=(0, 14))
@@ -637,6 +695,7 @@ class AppPDV(ctk.CTk):
     def mostrar_relatorio(self):
         self._limpar_area()
         self.area.grid_columnconfigure(0, weight=1)
+        self.area.grid_columnconfigure(1, weight=0)
 
         rel = banco.relatorio_dia()
         self._titulo(f"Relatório do dia  ·  {rel['data']}").grid(row=0, column=0, sticky="w", pady=(0, 14))
