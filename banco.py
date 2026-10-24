@@ -41,6 +41,24 @@ def inicializar():
         with open(_caminho_recurso("schema.sql"), "r", encoding="utf-8") as arquivo:
             conexao.executescript(arquivo.read())
         conexao.close()
+    _migrar()
+
+
+def _coluna_existe(conexao, tabela, coluna):
+    colunas = [linha[1] for linha in conexao.execute(f"PRAGMA table_info({tabela})").fetchall()]
+    return coluna in colunas
+
+
+def _migrar():
+    """Migrações leves: adiciona colunas novas sem apagar dados existentes."""
+    conexao = conectar()
+    for tabela in ("produtos", "vendas"):
+        if not _coluna_existe(conexao, tabela, "sincronizado"):
+            conexao.execute(
+                f"ALTER TABLE {tabela} ADD COLUMN sincronizado INTEGER NOT NULL DEFAULT 0"
+            )
+    conexao.commit()
+    conexao.close()
 
 
 class CodigoDuplicado(Exception):
@@ -296,6 +314,72 @@ def relatorio_dia(data=None):
     }
 
 
+# ---------- Sincronização (Fase 2) ----------
+def produtos_pendentes():
+    """Produtos ainda não enviados ao servidor central."""
+    conexao = conectar()
+    linhas = conexao.execute("SELECT * FROM produtos WHERE sincronizado = 0").fetchall()
+    conexao.close()
+    return [dict(linha) for linha in linhas]
+
+
+def vendas_pendentes():
+    """Vendas pendentes, já com seus itens e pagamentos prontos para enviar."""
+    conexao = conectar()
+    vendas = [
+        dict(linha)
+        for linha in conexao.execute(
+            "SELECT * FROM vendas WHERE sincronizado = 0 AND status = 'concluida'"
+        ).fetchall()
+    ]
+    for venda in vendas:
+        venda["itens"] = [
+            dict(linha)
+            for linha in conexao.execute(
+                """SELECT iv.quantidade, iv.preco_unit_centavos, iv.subtotal_centavos,
+                          p.uuid AS produto_uuid
+                   FROM itens_venda iv JOIN produtos p ON p.id = iv.produto_id
+                   WHERE iv.venda_id = ?""",
+                (venda["id"],),
+            ).fetchall()
+        ]
+        venda["pagamentos"] = [
+            dict(linha)
+            for linha in conexao.execute(
+                "SELECT forma, valor_centavos FROM pagamentos WHERE venda_id = ?",
+                (venda["id"],),
+            ).fetchall()
+        ]
+    conexao.close()
+    return vendas
+
+
+def marcar_produto_sincronizado(uuid_produto):
+    conexao = conectar()
+    conexao.execute("UPDATE produtos SET sincronizado = 1 WHERE uuid = ?", (uuid_produto,))
+    conexao.commit()
+    conexao.close()
+
+
+def marcar_venda_sincronizada(uuid_venda):
+    conexao = conectar()
+    conexao.execute("UPDATE vendas SET sincronizado = 1 WHERE uuid = ?", (uuid_venda,))
+    conexao.commit()
+    conexao.close()
+
+
+def contar_pendentes():
+    conexao = conectar()
+    produtos = conexao.execute(
+        "SELECT COUNT(*) FROM produtos WHERE sincronizado = 0"
+    ).fetchone()[0]
+    vendas = conexao.execute(
+        "SELECT COUNT(*) FROM vendas WHERE sincronizado = 0 AND status = 'concluida'"
+    ).fetchone()[0]
+    conexao.close()
+    return {"produtos": produtos, "vendas": vendas}
+
+
 # ---------- Produtos: editar e excluir ----------
 def atualizar_produto(produto_id, descricao, codigo, preco_centavos):
     """Altera um produto existente. Lança CodigoDuplicado se o código colidir."""
@@ -304,7 +388,8 @@ def atualizar_produto(produto_id, descricao, codigo, preco_centavos):
     try:
         conexao.execute(
             """UPDATE produtos
-               SET descricao = ?, codigo = ?, preco_centavos = ?, atualizado_em = ?
+               SET descricao = ?, codigo = ?, preco_centavos = ?,
+                   sincronizado = 0, atualizado_em = ?
                WHERE id = ?""",
             (descricao, codigo, preco_centavos, momento, produto_id),
         )
@@ -320,7 +405,7 @@ def inativar_produto(produto_id):
     momento = agora()
     conexao = conectar()
     conexao.execute(
-        "UPDATE produtos SET ativo = 0, atualizado_em = ? WHERE id = ?",
+        "UPDATE produtos SET ativo = 0, sincronizado = 0, atualizado_em = ? WHERE id = ?",
         (momento, produto_id),
     )
     conexao.commit()

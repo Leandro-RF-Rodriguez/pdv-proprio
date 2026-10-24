@@ -1,7 +1,7 @@
 """PDV Próprio — aplicativo de desktop.
 
-Janela feita com CustomTkinter (visual moderno e leve), conversando
-direto com o banco SQLite pela camada em banco.py.
+Janela feita com CustomTkinter, conversando direto com o banco SQLite
+pela camada em banco.py. Visual inspirado no design (verde, clean, Manrope).
 
 Rodar com:  python3 pdv_app.py
 """
@@ -9,25 +9,48 @@ Rodar com:  python3 pdv_app.py
 import tkinter as tk
 from tkinter import ttk, messagebox
 
+import urllib.error
+
 import customtkinter as ctk
 
 import banco
+import sync
 
 ctk.set_appearance_mode("light")
-ctk.set_default_color_theme("blue")
 
 FORMAS_PAGAMENTO = ["Dinheiro", "Cartão", "Pix"]
+FONTE = "Manrope"  # usa Manrope se instalada; senão, a fonte padrão do sistema
+
+# Paleta extraída do design do Figma
+P = {
+    "primary": "#173f35",
+    "primary_strong": "#0d2c25",
+    "primary_soft": "#d8efe0",
+    "accent": "#a9c95d",
+    "accent_strong": "#52712f",
+    "success": "#34755f",
+    "text": "#18342d",
+    "muted": "#728079",
+    "border": "#cfe2d6",
+    "surface": "#f8fdf9",
+    "canvas": "#e6f5eb",
+    "danger": "#b03a2e",
+    "danger_strong": "#8c2d24",
+}
 
 
 class AppPDV(ctk.CTk):
     def __init__(self):
         super().__init__()
         self.title("PDV Próprio")
-        self.geometry("980x680")
-        self.minsize(820, 560)
+        self.geometry("1000x690")
+        self.minsize(840, 560)
+        self.configure(fg_color=P["canvas"])
 
         self.carrinho = []
         self.produto_sel_id = None
+
+        self._estilizar_tabelas()
 
         self.grid_columnconfigure(1, weight=1)
         self.grid_rowconfigure(0, weight=1)
@@ -35,19 +58,87 @@ class AppPDV(ctk.CTk):
         self._montar_barra_lateral()
 
         self.area = ctk.CTkFrame(self, corner_radius=0, fg_color="transparent")
-        self.area.grid(row=0, column=1, sticky="nsew", padx=20, pady=20)
+        self.area.grid(row=0, column=1, sticky="nsew", padx=24, pady=24)
 
         self.mostrar_vendas()
 
+    # ---------- Helpers de estilo ----------
+    def _fonte(self, tamanho=13, negrito=False):
+        return ctk.CTkFont(family=FONTE, size=tamanho, weight="bold" if negrito else "normal")
+
+    def _btn(self, parent, text, command, tipo="primario", width=140):
+        estilos = {
+            "primario": dict(fg_color=P["primary"], hover_color=P["primary_strong"], text_color="#ffffff"),
+            "secundario": dict(fg_color=P["surface"], hover_color=P["primary_soft"], text_color=P["primary"], border_width=1, border_color=P["border"]),
+            "perigo": dict(fg_color=P["danger"], hover_color=P["danger_strong"], text_color="#ffffff"),
+            "sidebar": dict(fg_color="transparent", hover_color=P["primary_strong"], text_color="#ffffff", anchor="w"),
+            "accent": dict(fg_color=P["accent"], hover_color=P["accent_strong"], text_color=P["primary_strong"]),
+        }
+        return ctk.CTkButton(
+            parent, text=text, command=command, width=width,
+            corner_radius=11, font=self._fonte(13, True), **estilos[tipo],
+        )
+
+    def _card(self, parent):
+        return ctk.CTkFrame(parent, fg_color=P["surface"], corner_radius=15,
+                            border_width=1, border_color=P["border"])
+
+    def _entry(self, parent, placeholder):
+        return ctk.CTkEntry(
+            parent, placeholder_text=placeholder, corner_radius=10,
+            fg_color="#ffffff", border_color=P["border"], text_color=P["text"],
+            font=self._fonte(13),
+        )
+
+    def _option(self, parent, valores, width=140):
+        return ctk.CTkOptionMenu(
+            parent, values=valores, width=width, corner_radius=10,
+            fg_color=P["primary"], button_color=P["primary_strong"],
+            button_hover_color=P["primary_strong"], text_color="#ffffff",
+            font=self._fonte(13, True),
+        )
+
+    def _estilizar_tabelas(self):
+        estilo = ttk.Style()
+        try:
+            estilo.theme_use("default")
+        except tk.TclError:
+            pass
+        estilo.configure(
+            "Treeview", background=P["surface"], fieldbackground=P["surface"],
+            foreground=P["text"], rowheight=30, borderwidth=0, font=(FONTE, 11),
+        )
+        estilo.configure(
+            "Treeview.Heading", background=P["primary_soft"], foreground=P["primary"],
+            relief="flat", font=(FONTE, 10, "bold"), padding=6,
+        )
+        estilo.map(
+            "Treeview",
+            background=[("selected", P["primary_soft"])],
+            foreground=[("selected", P["primary"])],
+        )
+        estilo.map("Treeview.Heading", background=[("active", P["primary_soft"])])
+
+    def _titulo(self, texto):
+        return ctk.CTkLabel(self.area, text=texto, font=self._fonte(26, True), text_color=P["text"])
+
     # ---------- Barra lateral ----------
     def _montar_barra_lateral(self):
-        barra = ctk.CTkFrame(self, width=190, corner_radius=0)
+        barra = ctk.CTkFrame(self, width=200, corner_radius=0, fg_color=P["primary"])
         barra.grid(row=0, column=0, sticky="nsew")
         barra.grid_propagate(False)
 
-        ctk.CTkLabel(
-            barra, text="PDV Próprio", font=ctk.CTkFont(size=20, weight="bold")
-        ).pack(padx=20, pady=(26, 20))
+        marca = ctk.CTkFrame(barra, fg_color="transparent")
+        marca.pack(padx=20, pady=(26, 22), anchor="w")
+        selo = ctk.CTkLabel(
+            marca, text="PDV", width=46, height=46, corner_radius=13,
+            fg_color=P["accent"], text_color=P["primary_strong"], font=self._fonte(15, True),
+        )
+        selo.pack(side="left")
+        textos = ctk.CTkFrame(marca, fg_color="transparent")
+        textos.pack(side="left", padx=(10, 0))
+        ctk.CTkLabel(textos, text="PDV Próprio", text_color="#ffffff", font=self._fonte(15, True)).pack(anchor="w")
+        ctk.CTkLabel(textos, text="Ponto de venda", text_color="#8fb6a6", font=self._fonte(10)).pack(anchor="w")
 
         for texto, comando in [
             ("Venda", self.mostrar_vendas),
@@ -56,9 +147,30 @@ class AppPDV(ctk.CTk):
             ("Histórico", self.mostrar_historico),
             ("Relatório", self.mostrar_relatorio),
         ]:
-            ctk.CTkButton(barra, text=texto, command=comando).pack(
-                padx=16, pady=6, fill="x"
+            self._btn(barra, texto, comando, tipo="sidebar", width=168).pack(padx=16, pady=5, fill="x")
+
+        self._btn(barra, "Sincronizar", self.sincronizar_agora, tipo="accent", width=168).pack(
+            padx=16, pady=(20, 18), side="bottom", fill="x"
+        )
+
+    def sincronizar_agora(self):
+        pendentes = banco.contar_pendentes()
+        if pendentes["produtos"] == 0 and pendentes["vendas"] == 0:
+            messagebox.showinfo("Sincronização", "Nada pendente para enviar.")
+            return
+        try:
+            resultado = sync.sincronizar()
+        except urllib.error.URLError:
+            messagebox.showwarning(
+                "Servidor indisponível",
+                "Não foi possível conectar ao servidor central.\n"
+                "Os registros continuam pendentes e serão enviados depois.",
             )
+            return
+        messagebox.showinfo(
+            "Sincronização concluída",
+            f"Enviado(s): {resultado['produtos']} produto(s) e {resultado['vendas']} venda(s).",
+        )
 
     def _limpar_area(self):
         for widget in self.area.winfo_children():
@@ -84,29 +196,27 @@ class AppPDV(ctk.CTk):
         self.area.grid_columnconfigure(0, weight=1)
         self.area.grid_rowconfigure(2, weight=1)
 
-        ctk.CTkLabel(
-            self.area, text="Produtos", font=ctk.CTkFont(size=26, weight="bold")
-        ).grid(row=0, column=0, sticky="w", pady=(0, 14))
+        self._titulo("Produtos").grid(row=0, column=0, sticky="w", pady=(0, 14))
 
-        form = ctk.CTkFrame(self.area)
+        form = self._card(self.area)
         form.grid(row=1, column=0, sticky="ew", pady=(0, 14))
         form.grid_columnconfigure(0, weight=3)
         form.grid_columnconfigure(1, weight=2)
         form.grid_columnconfigure(2, weight=1)
 
-        self.campo_desc = ctk.CTkEntry(form, placeholder_text="Descrição do produto")
-        self.campo_cod = ctk.CTkEntry(form, placeholder_text="Código de barras")
-        self.campo_preco = ctk.CTkEntry(form, placeholder_text="Preço (ex: 5,50)")
-        self.campo_desc.grid(row=0, column=0, padx=(12, 6), pady=(12, 6), sticky="ew")
-        self.campo_cod.grid(row=0, column=1, padx=6, pady=(12, 6), sticky="ew")
-        self.campo_preco.grid(row=0, column=2, padx=(6, 12), pady=(12, 6), sticky="ew")
+        self.campo_desc = self._entry(form, "Descrição do produto")
+        self.campo_cod = self._entry(form, "Código de barras")
+        self.campo_preco = self._entry(form, "Preço (ex: 5,50)")
+        self.campo_desc.grid(row=0, column=0, padx=(14, 6), pady=(14, 6), sticky="ew")
+        self.campo_cod.grid(row=0, column=1, padx=6, pady=(14, 6), sticky="ew")
+        self.campo_preco.grid(row=0, column=2, padx=(6, 14), pady=(14, 6), sticky="ew")
 
         botoes = ctk.CTkFrame(form, fg_color="transparent")
-        botoes.grid(row=1, column=0, columnspan=3, padx=12, pady=(0, 12), sticky="w")
-        ctk.CTkButton(botoes, text="Adicionar", width=110, command=self.adicionar_produto).pack(side="left", padx=(0, 6))
-        ctk.CTkButton(botoes, text="Salvar alteração", width=130, command=self.salvar_produto).pack(side="left", padx=6)
-        ctk.CTkButton(botoes, text="Excluir", width=90, fg_color="#b03a2e", hover_color="#8c2d24", command=self.excluir_produto).pack(side="left", padx=6)
-        ctk.CTkButton(botoes, text="Limpar", width=90, fg_color="gray40", command=self.limpar_form_produto).pack(side="left", padx=6)
+        botoes.grid(row=1, column=0, columnspan=3, padx=14, pady=(0, 14), sticky="w")
+        self._btn(botoes, "Adicionar", self.adicionar_produto, width=110).pack(side="left", padx=(0, 6))
+        self._btn(botoes, "Salvar alteração", self.salvar_produto, "secundario", 140).pack(side="left", padx=6)
+        self._btn(botoes, "Excluir", self.excluir_produto, "perigo", 90).pack(side="left", padx=6)
+        self._btn(botoes, "Limpar", self.limpar_form_produto, "secundario", 90).pack(side="left", padx=6)
 
         colunas = ("id", "codigo", "descricao", "preco")
         self.tabela_prod = ttk.Treeview(self.area, columns=colunas, show="headings")
@@ -127,14 +237,13 @@ class AppPDV(ctk.CTk):
 
         ctk.CTkLabel(
             self.area, text="Clique num produto para editar ou excluir.",
-            text_color="gray40",
+            text_color=P["muted"], font=self._fonte(11),
         ).grid(row=3, column=0, sticky="w", pady=(8, 0))
 
         self.atualizar_tabela_produtos()
         self.campo_desc.focus()
 
     def _ler_form_produto(self):
-        """Valida e devolve (descricao, codigo, preco_centavos) ou None."""
         descricao = self.campo_desc.get().strip()
         codigo = self.campo_cod.get().strip() or None
         texto_preco = self.campo_preco.get().strip()
@@ -203,7 +312,6 @@ class AppPDV(ctk.CTk):
         if not selecao:
             return
         valores = self.tabela_prod.item(selecao[0], "values")
-        # valores = (id, codigo, descricao, preco_formatado)
         self.produto_sel_id = int(valores[0])
         self.campo_desc.delete(0, tk.END)
         self.campo_desc.insert(0, valores[2])
@@ -238,28 +346,24 @@ class AppPDV(ctk.CTk):
 
         sessao = banco.sessao_aberta()
         cabecalho = "Venda" if sessao else "Venda  (caixa fechado)"
-        ctk.CTkLabel(
-            self.area, text=cabecalho, font=ctk.CTkFont(size=26, weight="bold")
-        ).grid(row=0, column=0, sticky="w", pady=(0, 14))
+        self._titulo(cabecalho).grid(row=0, column=0, sticky="w", pady=(0, 14))
 
-        controles = ctk.CTkFrame(self.area)
+        controles = self._card(self.area)
         controles.grid(row=1, column=0, sticky="ew", pady=(0, 14))
         controles.grid_columnconfigure(1, weight=2)
         controles.grid_columnconfigure(3, weight=2)
 
-        ctk.CTkLabel(controles, text="Código:").grid(row=0, column=0, padx=(12, 4), pady=12)
-        self.campo_venda_cod = ctk.CTkEntry(controles, placeholder_text="Leia ou digite o código")
-        self.campo_venda_cod.grid(row=0, column=1, padx=4, pady=12, sticky="ew")
+        ctk.CTkLabel(controles, text="Código:", text_color=P["text"], font=self._fonte(12)).grid(row=0, column=0, padx=(14, 4), pady=14)
+        self.campo_venda_cod = self._entry(controles, "Leia ou digite o código")
+        self.campo_venda_cod.grid(row=0, column=1, padx=4, pady=14, sticky="ew")
         self.campo_venda_cod.bind("<Return>", lambda e: self.adicionar_por_codigo())
 
         self.produtos_venda = banco.listar_produtos()
         nomes = [p["descricao"] for p in self.produtos_venda] or ["(sem produtos)"]
-        ctk.CTkLabel(controles, text="ou:").grid(row=0, column=2, padx=(16, 4), pady=12)
-        self.sel_produto = ctk.CTkOptionMenu(controles, values=nomes)
-        self.sel_produto.grid(row=0, column=3, padx=4, pady=12, sticky="ew")
-        ctk.CTkButton(controles, text="Adicionar", width=110, command=self.adicionar_por_nome).grid(
-            row=0, column=4, padx=(4, 12), pady=12
-        )
+        ctk.CTkLabel(controles, text="ou:", text_color=P["muted"], font=self._fonte(12)).grid(row=0, column=2, padx=(16, 4), pady=14)
+        self.sel_produto = self._option(controles, nomes)
+        self.sel_produto.grid(row=0, column=3, padx=4, pady=14, sticky="ew")
+        self._btn(controles, "Adicionar", self.adicionar_por_nome, width=110).grid(row=0, column=4, padx=(4, 14), pady=14)
 
         colunas = ("descricao", "qtd", "unit", "subtotal")
         self.tabela_venda = ttk.Treeview(self.area, columns=colunas, show="headings")
@@ -276,26 +380,19 @@ class AppPDV(ctk.CTk):
         self.tabela_venda.configure(yscrollcommand=rol.set)
         rol.grid(row=2, column=1, sticky="ns")
 
-        rodape = ctk.CTkFrame(self.area)
+        rodape = self._card(self.area)
         rodape.grid(row=3, column=0, sticky="ew", pady=(14, 0))
         rodape.grid_columnconfigure(1, weight=1)
 
-        ctk.CTkButton(
-            rodape, text="Remover item", width=120, fg_color="gray40", command=self.remover_item
-        ).grid(row=0, column=0, padx=12, pady=12)
+        self._btn(rodape, "Remover item", self.remover_item, "secundario", 120).grid(row=0, column=0, padx=14, pady=14)
 
-        self.label_total = ctk.CTkLabel(
-            rodape, text="Total: R$ 0,00", font=ctk.CTkFont(size=22, weight="bold")
-        )
-        self.label_total.grid(row=0, column=1, padx=12, pady=12, sticky="e")
+        self.label_total = ctk.CTkLabel(rodape, text="Total: R$ 0,00", font=self._fonte(22, True), text_color=P["primary"])
+        self.label_total.grid(row=0, column=1, padx=12, pady=14, sticky="e")
 
-        self.sel_forma = ctk.CTkOptionMenu(rodape, values=FORMAS_PAGAMENTO, width=130)
-        self.sel_forma.grid(row=0, column=2, padx=6, pady=12)
+        self.sel_forma = self._option(rodape, FORMAS_PAGAMENTO, width=130)
+        self.sel_forma.grid(row=0, column=2, padx=6, pady=14)
 
-        ctk.CTkButton(
-            rodape, text="Finalizar venda", width=150,
-            fg_color="#1f8f4e", hover_color="#176b3a", command=self.finalizar_venda,
-        ).grid(row=0, column=3, padx=(6, 12), pady=12)
+        self._btn(rodape, "Finalizar venda", self.finalizar_venda, "primario", 150).grid(row=0, column=3, padx=(6, 14), pady=14)
 
         self.campo_venda_cod.focus()
         self.atualizar_carrinho()
@@ -391,9 +488,7 @@ class AppPDV(ctk.CTk):
     def mostrar_caixa(self):
         self._limpar_area()
         self.area.grid_columnconfigure(0, weight=1)
-        ctk.CTkLabel(
-            self.area, text="Caixa", font=ctk.CTkFont(size=26, weight="bold")
-        ).grid(row=0, column=0, sticky="w", pady=(0, 14))
+        self._titulo("Caixa").grid(row=0, column=0, sticky="w", pady=(0, 14))
 
         sessao = banco.sessao_aberta()
         if sessao is None:
@@ -402,21 +497,19 @@ class AppPDV(ctk.CTk):
             self._tela_caixa_aberto(sessao)
 
     def _tela_abrir_caixa(self):
-        caixa = ctk.CTkFrame(self.area)
+        caixa = self._card(self.area)
         caixa.grid(row=1, column=0, sticky="ew")
         caixa.grid_columnconfigure(1, weight=1)
-        ctk.CTkLabel(caixa, text="Caixa fechado. Abra para começar a operar.").grid(
-            row=0, column=0, columnspan=2, padx=12, pady=(14, 8), sticky="w"
+        ctk.CTkLabel(caixa, text="Caixa fechado. Abra para começar a operar.", text_color=P["text"], font=self._fonte(13)).grid(
+            row=0, column=0, columnspan=2, padx=14, pady=(16, 8), sticky="w"
         )
-        ctk.CTkLabel(caixa, text="Operador:").grid(row=1, column=0, padx=12, pady=8, sticky="e")
-        self.campo_operador = ctk.CTkEntry(caixa, placeholder_text="Nome do operador")
-        self.campo_operador.grid(row=1, column=1, padx=12, pady=8, sticky="ew")
-        ctk.CTkLabel(caixa, text="Fundo de troco (R$):").grid(row=2, column=0, padx=12, pady=8, sticky="e")
-        self.campo_abertura = ctk.CTkEntry(caixa, placeholder_text="ex: 100,00")
-        self.campo_abertura.grid(row=2, column=1, padx=12, pady=8, sticky="ew")
-        ctk.CTkButton(caixa, text="Abrir caixa", command=self.abrir_caixa).grid(
-            row=3, column=1, padx=12, pady=(8, 14), sticky="e"
-        )
+        ctk.CTkLabel(caixa, text="Operador:", text_color=P["text"], font=self._fonte(12)).grid(row=1, column=0, padx=14, pady=8, sticky="e")
+        self.campo_operador = self._entry(caixa, "Nome do operador")
+        self.campo_operador.grid(row=1, column=1, padx=14, pady=8, sticky="ew")
+        ctk.CTkLabel(caixa, text="Fundo de troco (R$):", text_color=P["text"], font=self._fonte(12)).grid(row=2, column=0, padx=14, pady=8, sticky="e")
+        self.campo_abertura = self._entry(caixa, "ex: 100,00")
+        self.campo_abertura.grid(row=2, column=1, padx=14, pady=8, sticky="ew")
+        self._btn(caixa, "Abrir caixa", self.abrir_caixa, width=130).grid(row=3, column=1, padx=14, pady=(8, 16), sticky="e")
         self.campo_operador.focus()
 
     def abrir_caixa(self):
@@ -434,16 +527,16 @@ class AppPDV(ctk.CTk):
         self.mostrar_caixa()
 
     def _tela_caixa_aberto(self, sessao):
-        info = ctk.CTkFrame(self.area)
+        info = self._card(self.area)
         info.grid(row=1, column=0, sticky="ew", pady=(0, 14))
         operador = sessao["operador"] or "—"
         ctk.CTkLabel(
             info, text=f"Caixa aberto por {operador}  ·  desde {sessao['aberto_em']}",
-            font=ctk.CTkFont(size=14, weight="bold"),
-        ).pack(padx=12, pady=12, anchor="w")
+            font=self._fonte(14, True), text_color=P["primary"],
+        ).pack(padx=14, pady=14, anchor="w")
 
         resumo = banco.resumo_caixa(sessao["id"])
-        painel = ctk.CTkFrame(self.area)
+        painel = self._card(self.area)
         painel.grid(row=2, column=0, sticky="ew", pady=(0, 14))
         painel.grid_columnconfigure(1, weight=1)
         linhas = [
@@ -456,20 +549,16 @@ class AppPDV(ctk.CTk):
         ]
         for i, (rotulo, centavos) in enumerate(linhas):
             negrito = rotulo == "Esperado na gaveta"
-            fonte = ctk.CTkFont(size=14, weight="bold" if negrito else "normal")
-            ctk.CTkLabel(painel, text=rotulo, font=fonte).grid(row=i, column=0, padx=12, pady=6, sticky="w")
-            ctk.CTkLabel(painel, text=f"R$ {banco.formatar_reais(centavos)}", font=fonte).grid(
-                row=i, column=1, padx=12, pady=6, sticky="e"
-            )
+            fonte = self._fonte(14, negrito)
+            cor = P["primary"] if negrito else P["text"]
+            ctk.CTkLabel(painel, text=rotulo, font=fonte, text_color=cor).grid(row=i, column=0, padx=14, pady=6, sticky="w")
+            ctk.CTkLabel(painel, text=f"R$ {banco.formatar_reais(centavos)}", font=fonte, text_color=cor).grid(row=i, column=1, padx=14, pady=6, sticky="e")
 
-        botoes = ctk.CTkFrame(self.area)
+        botoes = ctk.CTkFrame(self.area, fg_color="transparent")
         botoes.grid(row=3, column=0, sticky="ew")
-        ctk.CTkButton(botoes, text="Suprimento", command=lambda: self._movimento(sessao, "suprimento")).pack(side="left", padx=12, pady=12)
-        ctk.CTkButton(botoes, text="Sangria", command=lambda: self._movimento(sessao, "sangria")).pack(side="left", padx=4, pady=12)
-        ctk.CTkButton(
-            botoes, text="Fechar caixa", fg_color="#b03a2e", hover_color="#8c2d24",
-            command=lambda: self.fechar_caixa(sessao),
-        ).pack(side="right", padx=12, pady=12)
+        self._btn(botoes, "Suprimento", lambda: self._movimento(sessao, "suprimento"), "secundario", 120).pack(side="left", padx=(0, 6), pady=6)
+        self._btn(botoes, "Sangria", lambda: self._movimento(sessao, "sangria"), "secundario", 120).pack(side="left", padx=6, pady=6)
+        self._btn(botoes, "Fechar caixa", lambda: self.fechar_caixa(sessao), "perigo", 140).pack(side="right", padx=0, pady=6)
 
     def _movimento(self, sessao, tipo):
         valor = self._pedir_valor(tipo.capitalize(), f"Valor do {tipo} (R$):")
@@ -506,9 +595,7 @@ class AppPDV(ctk.CTk):
         self.area.grid_columnconfigure(0, weight=1)
         self.area.grid_rowconfigure(1, weight=1)
 
-        ctk.CTkLabel(
-            self.area, text="Histórico de vendas", font=ctk.CTkFont(size=26, weight="bold")
-        ).grid(row=0, column=0, sticky="w", pady=(0, 14))
+        self._titulo("Histórico de vendas").grid(row=0, column=0, sticky="w", pady=(0, 14))
 
         colunas = ("id", "data", "itens", "formas", "total")
         tabela = ttk.Treeview(self.area, columns=colunas, show="headings")
@@ -552,24 +639,17 @@ class AppPDV(ctk.CTk):
         self.area.grid_columnconfigure(0, weight=1)
 
         rel = banco.relatorio_dia()
-        ctk.CTkLabel(
-            self.area, text=f"Relatório do dia  ·  {rel['data']}",
-            font=ctk.CTkFont(size=26, weight="bold"),
-        ).grid(row=0, column=0, sticky="w", pady=(0, 14))
+        self._titulo(f"Relatório do dia  ·  {rel['data']}").grid(row=0, column=0, sticky="w", pady=(0, 14))
 
-        topo = ctk.CTkFrame(self.area)
+        topo = self._card(self.area)
         topo.grid(row=1, column=0, sticky="ew", pady=(0, 14))
         topo.grid_columnconfigure((0, 1), weight=1)
-        ctk.CTkLabel(topo, text="Vendas concluídas", font=ctk.CTkFont(size=14)).grid(row=0, column=0, padx=12, pady=(12, 2), sticky="w")
-        ctk.CTkLabel(topo, text=str(rel["qtd"]), font=ctk.CTkFont(size=22, weight="bold")).grid(row=1, column=0, padx=12, pady=(0, 12), sticky="w")
-        ctk.CTkLabel(topo, text="Total vendido", font=ctk.CTkFont(size=14)).grid(row=0, column=1, padx=12, pady=(12, 2), sticky="e")
-        ctk.CTkLabel(
-            topo, text=f"R$ {banco.formatar_reais(rel['total'])}", font=ctk.CTkFont(size=22, weight="bold")
-        ).grid(row=1, column=1, padx=12, pady=(0, 12), sticky="e")
+        ctk.CTkLabel(topo, text="Vendas concluídas", font=self._fonte(14), text_color=P["muted"]).grid(row=0, column=0, padx=14, pady=(14, 2), sticky="w")
+        ctk.CTkLabel(topo, text=str(rel["qtd"]), font=self._fonte(22, True), text_color=P["primary"]).grid(row=1, column=0, padx=14, pady=(0, 14), sticky="w")
+        ctk.CTkLabel(topo, text="Total vendido", font=self._fonte(14), text_color=P["muted"]).grid(row=0, column=1, padx=14, pady=(14, 2), sticky="e")
+        ctk.CTkLabel(topo, text=f"R$ {banco.formatar_reais(rel['total'])}", font=self._fonte(22, True), text_color=P["primary"]).grid(row=1, column=1, padx=14, pady=(0, 14), sticky="e")
 
-        ctk.CTkLabel(
-            self.area, text="Por forma de pagamento", font=ctk.CTkFont(size=16, weight="bold")
-        ).grid(row=2, column=0, sticky="w", pady=(0, 6))
+        ctk.CTkLabel(self.area, text="Por forma de pagamento", font=self._fonte(16, True), text_color=P["text"]).grid(row=2, column=0, sticky="w", pady=(0, 6))
 
         tabela = ttk.Treeview(self.area, columns=("forma", "valor"), show="headings", height=4)
         tabela.heading("forma", text="Forma")

@@ -8,6 +8,7 @@ CREATE TABLE IF NOT EXISTS produtos (
     descricao TEXT NOT NULL,
     preco_centavos INTEGER NOT NULL DEFAULT 0,
     ativo INTEGER NOT NULL DEFAULT 1,
+    sincronizado INTEGER NOT NULL DEFAULT 0,
     criado_em TEXT NOT NULL,
     atualizado_em TEXT NOT NULL
 );
@@ -39,6 +40,7 @@ CREATE TABLE IF NOT EXISTS vendas (
     sessao_id INTEGER,
     total_centavos INTEGER NOT NULL DEFAULT 0,
     status TEXT NOT NULL DEFAULT 'concluida',
+    sincronizado INTEGER NOT NULL DEFAULT 0,
     criado_em TEXT NOT NULL,
     FOREIGN KEY (sessao_id) REFERENCES sessoes_caixa (id)
 );
