@@ -23,10 +23,11 @@ class AppPDV(ctk.CTk):
     def __init__(self):
         super().__init__()
         self.title("PDV Próprio")
-        self.geometry("980x660")
-        self.minsize(820, 540)
+        self.geometry("980x680")
+        self.minsize(820, 560)
 
         self.carrinho = []
+        self.produto_sel_id = None
 
         self.grid_columnconfigure(1, weight=1)
         self.grid_rowconfigure(0, weight=1)
@@ -48,25 +49,22 @@ class AppPDV(ctk.CTk):
             barra, text="PDV Próprio", font=ctk.CTkFont(size=20, weight="bold")
         ).pack(padx=20, pady=(26, 20))
 
-        ctk.CTkButton(barra, text="Venda", command=self.mostrar_vendas).pack(
-            padx=16, pady=6, fill="x"
-        )
-        ctk.CTkButton(barra, text="Produtos", command=self.mostrar_produtos).pack(
-            padx=16, pady=6, fill="x"
-        )
-        ctk.CTkButton(barra, text="Caixa", command=self.mostrar_caixa).pack(
-            padx=16, pady=6, fill="x"
-        )
-        ctk.CTkButton(barra, text="Relatório", command=self.mostrar_relatorio).pack(
-            padx=16, pady=6, fill="x"
-        )
+        for texto, comando in [
+            ("Venda", self.mostrar_vendas),
+            ("Produtos", self.mostrar_produtos),
+            ("Caixa", self.mostrar_caixa),
+            ("Histórico", self.mostrar_historico),
+            ("Relatório", self.mostrar_relatorio),
+        ]:
+            ctk.CTkButton(barra, text=texto, command=comando).pack(
+                padx=16, pady=6, fill="x"
+            )
 
     def _limpar_area(self):
         for widget in self.area.winfo_children():
             widget.destroy()
 
     def _pedir_valor(self, titulo, texto):
-        """Abre um diálogo pedindo um valor em reais; devolve centavos ou None."""
         dialogo = ctk.CTkInputDialog(title=titulo, text=texto)
         resposta = dialogo.get_input()
         if resposta is None or resposta.strip() == "":
@@ -78,10 +76,11 @@ class AppPDV(ctk.CTk):
             return None
 
     # ==================================================================
-    # Tela de Produtos
+    # Tela de Produtos (cadastrar, editar, excluir)
     # ==================================================================
     def mostrar_produtos(self):
         self._limpar_area()
+        self.produto_sel_id = None
         self.area.grid_columnconfigure(0, weight=1)
         self.area.grid_rowconfigure(2, weight=1)
 
@@ -98,16 +97,16 @@ class AppPDV(ctk.CTk):
         self.campo_desc = ctk.CTkEntry(form, placeholder_text="Descrição do produto")
         self.campo_cod = ctk.CTkEntry(form, placeholder_text="Código de barras")
         self.campo_preco = ctk.CTkEntry(form, placeholder_text="Preço (ex: 5,50)")
-        self.campo_desc.grid(row=0, column=0, padx=(12, 6), pady=12, sticky="ew")
-        self.campo_cod.grid(row=0, column=1, padx=6, pady=12, sticky="ew")
-        self.campo_preco.grid(row=0, column=2, padx=6, pady=12, sticky="ew")
+        self.campo_desc.grid(row=0, column=0, padx=(12, 6), pady=(12, 6), sticky="ew")
+        self.campo_cod.grid(row=0, column=1, padx=6, pady=(12, 6), sticky="ew")
+        self.campo_preco.grid(row=0, column=2, padx=(6, 12), pady=(12, 6), sticky="ew")
 
-        ctk.CTkButton(form, text="Adicionar", width=120, command=self.adicionar_produto).grid(
-            row=0, column=3, padx=(6, 12), pady=12
-        )
-        for campo in (self.campo_desc, self.campo_cod, self.campo_preco):
-            campo.bind("<Return>", lambda evento: self.adicionar_produto())
-        self.campo_desc.focus()
+        botoes = ctk.CTkFrame(form, fg_color="transparent")
+        botoes.grid(row=1, column=0, columnspan=3, padx=12, pady=(0, 12), sticky="w")
+        ctk.CTkButton(botoes, text="Adicionar", width=110, command=self.adicionar_produto).pack(side="left", padx=(0, 6))
+        ctk.CTkButton(botoes, text="Salvar alteração", width=130, command=self.salvar_produto).pack(side="left", padx=6)
+        ctk.CTkButton(botoes, text="Excluir", width=90, fg_color="#b03a2e", hover_color="#8c2d24", command=self.excluir_produto).pack(side="left", padx=6)
+        ctk.CTkButton(botoes, text="Limpar", width=90, fg_color="gray40", command=self.limpar_form_produto).pack(side="left", padx=6)
 
         colunas = ("id", "codigo", "descricao", "preco")
         self.tabela_prod = ttk.Treeview(self.area, columns=colunas, show="headings")
@@ -117,44 +116,101 @@ class AppPDV(ctk.CTk):
         self.tabela_prod.heading("preco", text="Preço (R$)")
         self.tabela_prod.column("id", width=50, anchor="center")
         self.tabela_prod.column("codigo", width=160, anchor="center")
-        self.tabela_prod.column("descricao", width=380)
+        self.tabela_prod.column("descricao", width=360)
         self.tabela_prod.column("preco", width=110, anchor="e")
         self.tabela_prod.grid(row=2, column=0, sticky="nsew")
+        self.tabela_prod.bind("<<TreeviewSelect>>", self._carregar_produto_selecionado)
+
         rol = ttk.Scrollbar(self.area, orient="vertical", command=self.tabela_prod.yview)
         self.tabela_prod.configure(yscrollcommand=rol.set)
         rol.grid(row=2, column=1, sticky="ns")
 
-        self.atualizar_tabela_produtos()
+        ctk.CTkLabel(
+            self.area, text="Clique num produto para editar ou excluir.",
+            text_color="gray40",
+        ).grid(row=3, column=0, sticky="w", pady=(8, 0))
 
-    def adicionar_produto(self):
+        self.atualizar_tabela_produtos()
+        self.campo_desc.focus()
+
+    def _ler_form_produto(self):
+        """Valida e devolve (descricao, codigo, preco_centavos) ou None."""
         descricao = self.campo_desc.get().strip()
         codigo = self.campo_cod.get().strip() or None
         texto_preco = self.campo_preco.get().strip()
-
         if not descricao:
             messagebox.showwarning("Campo obrigatório", "Informe a descrição do produto.")
             self.campo_desc.focus()
-            return
+            return None
         try:
             preco_centavos = banco.para_centavos(texto_preco) if texto_preco else 0
         except ValueError:
             messagebox.showwarning("Preço inválido", "Use um número, ex: 5,50.")
             self.campo_preco.focus()
+            return None
+        return descricao, codigo, preco_centavos
+
+    def adicionar_produto(self):
+        dados = self._ler_form_produto()
+        if dados is None:
             return
         try:
-            banco.cadastrar_produto(descricao, codigo, preco_centavos)
+            banco.cadastrar_produto(*dados)
         except banco.CodigoDuplicado:
-            messagebox.showwarning(
-                "Código repetido", f"Já existe um produto com o código {codigo}."
-            )
+            messagebox.showwarning("Código repetido", f"Já existe um produto com o código {dados[1]}.")
             self.campo_cod.focus()
             return
+        self.limpar_form_produto()
+        self.atualizar_tabela_produtos()
 
+    def salvar_produto(self):
+        if self.produto_sel_id is None:
+            messagebox.showinfo("Selecione um produto", "Clique num produto da lista para editar.")
+            return
+        dados = self._ler_form_produto()
+        if dados is None:
+            return
+        try:
+            banco.atualizar_produto(self.produto_sel_id, *dados)
+        except banco.CodigoDuplicado:
+            messagebox.showwarning("Código repetido", f"Já existe um produto com o código {dados[1]}.")
+            self.campo_cod.focus()
+            return
+        self.limpar_form_produto()
+        self.atualizar_tabela_produtos()
+
+    def excluir_produto(self):
+        if self.produto_sel_id is None:
+            messagebox.showinfo("Selecione um produto", "Clique num produto da lista para excluir.")
+            return
+        if not messagebox.askyesno("Excluir produto", "Deseja mesmo excluir este produto?"):
+            return
+        banco.inativar_produto(self.produto_sel_id)
+        self.limpar_form_produto()
+        self.atualizar_tabela_produtos()
+
+    def limpar_form_produto(self):
+        self.produto_sel_id = None
         self.campo_desc.delete(0, tk.END)
         self.campo_cod.delete(0, tk.END)
         self.campo_preco.delete(0, tk.END)
+        if self.tabela_prod.selection():
+            self.tabela_prod.selection_remove(self.tabela_prod.selection())
         self.campo_desc.focus()
-        self.atualizar_tabela_produtos()
+
+    def _carregar_produto_selecionado(self, evento=None):
+        selecao = self.tabela_prod.selection()
+        if not selecao:
+            return
+        valores = self.tabela_prod.item(selecao[0], "values")
+        # valores = (id, codigo, descricao, preco_formatado)
+        self.produto_sel_id = int(valores[0])
+        self.campo_desc.delete(0, tk.END)
+        self.campo_desc.insert(0, valores[2])
+        self.campo_cod.delete(0, tk.END)
+        self.campo_cod.insert(0, valores[1])
+        self.campo_preco.delete(0, tk.END)
+        self.campo_preco.insert(0, valores[3])
 
     def atualizar_tabela_produtos(self):
         for linha in self.tabela_prod.get_children():
@@ -180,10 +236,8 @@ class AppPDV(ctk.CTk):
         self.area.grid_columnconfigure(0, weight=1)
         self.area.grid_rowconfigure(2, weight=1)
 
-        cabecalho = "Venda"
         sessao = banco.sessao_aberta()
-        if sessao is None:
-            cabecalho = "Venda  (caixa fechado)"
+        cabecalho = "Venda" if sessao else "Venda  (caixa fechado)"
         ctk.CTkLabel(
             self.area, text=cabecalho, font=ctk.CTkFont(size=26, weight="bold")
         ).grid(row=0, column=0, sticky="w", pady=(0, 14))
@@ -227,8 +281,7 @@ class AppPDV(ctk.CTk):
         rodape.grid_columnconfigure(1, weight=1)
 
         ctk.CTkButton(
-            rodape, text="Remover item", width=120, fg_color="gray40",
-            command=self.remover_item,
+            rodape, text="Remover item", width=120, fg_color="gray40", command=self.remover_item
         ).grid(row=0, column=0, padx=12, pady=12)
 
         self.label_total = ctk.CTkLabel(
@@ -241,8 +294,7 @@ class AppPDV(ctk.CTk):
 
         ctk.CTkButton(
             rodape, text="Finalizar venda", width=150,
-            fg_color="#1f8f4e", hover_color="#176b3a",
-            command=self.finalizar_venda,
+            fg_color="#1f8f4e", hover_color="#176b3a", command=self.finalizar_venda,
         ).grid(row=0, column=3, padx=(6, 12), pady=12)
 
         self.campo_venda_cod.focus()
@@ -310,26 +362,21 @@ class AppPDV(ctk.CTk):
                     banco.formatar_reais(subtotal),
                 ),
             )
-        self.label_total.configure(
-            text=f"Total: R$ {banco.formatar_reais(self._total_centavos())}"
-        )
+        self.label_total.configure(text=f"Total: R$ {banco.formatar_reais(self._total_centavos())}")
 
     def finalizar_venda(self):
         if not self.carrinho:
             messagebox.showwarning("Carrinho vazio", "Adicione pelo menos um produto.")
             return
-
         total = self._total_centavos()
         sessao = banco.sessao_aberta()
         sessao_id = sessao["id"] if sessao else None
         pagamentos = [{"forma": self.sel_forma.get(), "valor_centavos": total}]
-
         try:
             venda_id, total_gravado = banco.registrar_venda(self.carrinho, pagamentos, sessao_id)
         except Exception as erro:
             messagebox.showerror("Erro", f"Não foi possível registrar a venda.\n{erro}")
             return
-
         messagebox.showinfo(
             "Venda registrada",
             f"Venda #{venda_id} concluída.\nTotal: R$ {banco.formatar_reais(total_gravado)}",
@@ -344,7 +391,6 @@ class AppPDV(ctk.CTk):
     def mostrar_caixa(self):
         self._limpar_area()
         self.area.grid_columnconfigure(0, weight=1)
-
         ctk.CTkLabel(
             self.area, text="Caixa", font=ctk.CTkFont(size=26, weight="bold")
         ).grid(row=0, column=0, sticky="w", pady=(0, 14))
@@ -359,18 +405,15 @@ class AppPDV(ctk.CTk):
         caixa = ctk.CTkFrame(self.area)
         caixa.grid(row=1, column=0, sticky="ew")
         caixa.grid_columnconfigure(1, weight=1)
-
         ctk.CTkLabel(caixa, text="Caixa fechado. Abra para começar a operar.").grid(
             row=0, column=0, columnspan=2, padx=12, pady=(14, 8), sticky="w"
         )
         ctk.CTkLabel(caixa, text="Operador:").grid(row=1, column=0, padx=12, pady=8, sticky="e")
         self.campo_operador = ctk.CTkEntry(caixa, placeholder_text="Nome do operador")
         self.campo_operador.grid(row=1, column=1, padx=12, pady=8, sticky="ew")
-
         ctk.CTkLabel(caixa, text="Fundo de troco (R$):").grid(row=2, column=0, padx=12, pady=8, sticky="e")
         self.campo_abertura = ctk.CTkEntry(caixa, placeholder_text="ex: 100,00")
         self.campo_abertura.grid(row=2, column=1, padx=12, pady=8, sticky="ew")
-
         ctk.CTkButton(caixa, text="Abrir caixa", command=self.abrir_caixa).grid(
             row=3, column=1, padx=12, pady=(8, 14), sticky="e"
         )
@@ -395,8 +438,7 @@ class AppPDV(ctk.CTk):
         info.grid(row=1, column=0, sticky="ew", pady=(0, 14))
         operador = sessao["operador"] or "—"
         ctk.CTkLabel(
-            info,
-            text=f"Caixa aberto por {operador}  ·  desde {sessao['aberto_em']}",
+            info, text=f"Caixa aberto por {operador}  ·  desde {sessao['aberto_em']}",
             font=ctk.CTkFont(size=14, weight="bold"),
         ).pack(padx=12, pady=12, anchor="w")
 
@@ -415,30 +457,22 @@ class AppPDV(ctk.CTk):
         for i, (rotulo, centavos) in enumerate(linhas):
             negrito = rotulo == "Esperado na gaveta"
             fonte = ctk.CTkFont(size=14, weight="bold" if negrito else "normal")
-            ctk.CTkLabel(painel, text=rotulo, font=fonte).grid(
-                row=i, column=0, padx=12, pady=6, sticky="w"
-            )
+            ctk.CTkLabel(painel, text=rotulo, font=fonte).grid(row=i, column=0, padx=12, pady=6, sticky="w")
             ctk.CTkLabel(painel, text=f"R$ {banco.formatar_reais(centavos)}", font=fonte).grid(
                 row=i, column=1, padx=12, pady=6, sticky="e"
             )
 
         botoes = ctk.CTkFrame(self.area)
         botoes.grid(row=3, column=0, sticky="ew")
-        ctk.CTkButton(botoes, text="Suprimento", command=lambda: self._movimento(sessao, "suprimento")).pack(
-            side="left", padx=12, pady=12
-        )
-        ctk.CTkButton(botoes, text="Sangria", command=lambda: self._movimento(sessao, "sangria")).pack(
-            side="left", padx=4, pady=12
-        )
+        ctk.CTkButton(botoes, text="Suprimento", command=lambda: self._movimento(sessao, "suprimento")).pack(side="left", padx=12, pady=12)
+        ctk.CTkButton(botoes, text="Sangria", command=lambda: self._movimento(sessao, "sangria")).pack(side="left", padx=4, pady=12)
         ctk.CTkButton(
             botoes, text="Fechar caixa", fg_color="#b03a2e", hover_color="#8c2d24",
             command=lambda: self.fechar_caixa(sessao),
         ).pack(side="right", padx=12, pady=12)
 
     def _movimento(self, sessao, tipo):
-        valor = self._pedir_valor(
-            tipo.capitalize(), f"Valor do {tipo} (R$):"
-        )
+        valor = self._pedir_valor(tipo.capitalize(), f"Valor do {tipo} (R$):")
         if valor is None or valor <= 0:
             return
         banco.registrar_movimento_caixa(sessao["id"], tipo, valor)
@@ -465,6 +499,52 @@ class AppPDV(ctk.CTk):
         self.mostrar_caixa()
 
     # ==================================================================
+    # Tela de Histórico de vendas
+    # ==================================================================
+    def mostrar_historico(self):
+        self._limpar_area()
+        self.area.grid_columnconfigure(0, weight=1)
+        self.area.grid_rowconfigure(1, weight=1)
+
+        ctk.CTkLabel(
+            self.area, text="Histórico de vendas", font=ctk.CTkFont(size=26, weight="bold")
+        ).grid(row=0, column=0, sticky="w", pady=(0, 14))
+
+        colunas = ("id", "data", "itens", "formas", "total")
+        tabela = ttk.Treeview(self.area, columns=colunas, show="headings")
+        tabela.heading("id", text="Venda")
+        tabela.heading("data", text="Data/hora")
+        tabela.heading("itens", text="Itens")
+        tabela.heading("formas", text="Pagamento")
+        tabela.heading("total", text="Total (R$)")
+        tabela.column("id", width=70, anchor="center")
+        tabela.column("data", width=170, anchor="center")
+        tabela.column("itens", width=70, anchor="center")
+        tabela.column("formas", width=160)
+        tabela.column("total", width=120, anchor="e")
+        tabela.grid(row=1, column=0, sticky="nsew")
+        rol = ttk.Scrollbar(self.area, orient="vertical", command=tabela.yview)
+        tabela.configure(yscrollcommand=rol.set)
+        rol.grid(row=1, column=1, sticky="ns")
+
+        vendas = banco.listar_vendas()
+        if not vendas:
+            tabela.insert("", tk.END, values=("", "(nenhuma venda ainda)", "", "", ""))
+        for venda in vendas:
+            data = venda["criado_em"].replace("T", " ")
+            tabela.insert(
+                "",
+                tk.END,
+                values=(
+                    f"#{venda['id']}",
+                    data,
+                    venda["qtd_itens"],
+                    venda["formas"] or "",
+                    banco.formatar_reais(venda["total_centavos"]),
+                ),
+            )
+
+    # ==================================================================
     # Tela de Relatório
     # ==================================================================
     def mostrar_relatorio(self):
@@ -480,18 +560,11 @@ class AppPDV(ctk.CTk):
         topo = ctk.CTkFrame(self.area)
         topo.grid(row=1, column=0, sticky="ew", pady=(0, 14))
         topo.grid_columnconfigure((0, 1), weight=1)
-        ctk.CTkLabel(topo, text="Vendas concluídas", font=ctk.CTkFont(size=14)).grid(
-            row=0, column=0, padx=12, pady=(12, 2), sticky="w"
-        )
-        ctk.CTkLabel(topo, text=str(rel["qtd"]), font=ctk.CTkFont(size=22, weight="bold")).grid(
-            row=1, column=0, padx=12, pady=(0, 12), sticky="w"
-        )
-        ctk.CTkLabel(topo, text="Total vendido", font=ctk.CTkFont(size=14)).grid(
-            row=0, column=1, padx=12, pady=(12, 2), sticky="e"
-        )
+        ctk.CTkLabel(topo, text="Vendas concluídas", font=ctk.CTkFont(size=14)).grid(row=0, column=0, padx=12, pady=(12, 2), sticky="w")
+        ctk.CTkLabel(topo, text=str(rel["qtd"]), font=ctk.CTkFont(size=22, weight="bold")).grid(row=1, column=0, padx=12, pady=(0, 12), sticky="w")
+        ctk.CTkLabel(topo, text="Total vendido", font=ctk.CTkFont(size=14)).grid(row=0, column=1, padx=12, pady=(12, 2), sticky="e")
         ctk.CTkLabel(
-            topo, text=f"R$ {banco.formatar_reais(rel['total'])}",
-            font=ctk.CTkFont(size=22, weight="bold"),
+            topo, text=f"R$ {banco.formatar_reais(rel['total'])}", font=ctk.CTkFont(size=22, weight="bold")
         ).grid(row=1, column=1, padx=12, pady=(0, 12), sticky="e")
 
         ctk.CTkLabel(
@@ -512,5 +585,5 @@ class AppPDV(ctk.CTk):
 
 
 if __name__ == "__main__":
-    banco.inicializar()  # cria o banco na primeira execução, se preciso
+    banco.inicializar()
     AppPDV().mainloop()

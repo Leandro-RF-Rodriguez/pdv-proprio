@@ -294,3 +294,52 @@ def relatorio_dia(data=None):
         "total": total,
         "por_forma": [(linha[0], linha[1]) for linha in por_forma],
     }
+
+
+# ---------- Produtos: editar e excluir ----------
+def atualizar_produto(produto_id, descricao, codigo, preco_centavos):
+    """Altera um produto existente. Lança CodigoDuplicado se o código colidir."""
+    momento = agora()
+    conexao = conectar()
+    try:
+        conexao.execute(
+            """UPDATE produtos
+               SET descricao = ?, codigo = ?, preco_centavos = ?, atualizado_em = ?
+               WHERE id = ?""",
+            (descricao, codigo, preco_centavos, momento, produto_id),
+        )
+        conexao.commit()
+    except sqlite3.IntegrityError:
+        raise CodigoDuplicado(codigo)
+    finally:
+        conexao.close()
+
+
+def inativar_produto(produto_id):
+    """Exclusão lógica: marca ativo = 0 (não apaga o histórico de vendas)."""
+    momento = agora()
+    conexao = conectar()
+    conexao.execute(
+        "UPDATE produtos SET ativo = 0, atualizado_em = ? WHERE id = ?",
+        (momento, produto_id),
+    )
+    conexao.commit()
+    conexao.close()
+
+
+# ---------- Histórico de vendas ----------
+def listar_vendas(limite=200):
+    """Vendas concluídas, mais recentes primeiro, com resumo de itens e formas."""
+    conexao = conectar()
+    linhas = conexao.execute(
+        """SELECT v.id, v.total_centavos, v.criado_em,
+                  (SELECT COUNT(*) FROM itens_venda WHERE venda_id = v.id) AS qtd_itens,
+                  (SELECT GROUP_CONCAT(forma, ', ') FROM pagamentos WHERE venda_id = v.id) AS formas
+           FROM vendas v
+           WHERE v.status = 'concluida'
+           ORDER BY v.id DESC
+           LIMIT ?""",
+        (limite,),
+    ).fetchall()
+    conexao.close()
+    return [dict(linha) for linha in linhas]
