@@ -13,6 +13,9 @@ CREATE TABLE IF NOT EXISTS produtos (
     atualizado_em TEXT NOT NULL
 );
 
+-- As tabelas de usuários e configuração fiscal, e os campos fiscais do produto,
+-- são criados/migrados pelo banco.py (_migrar), que é a fonte única para a Fase 3.
+
 CREATE TABLE IF NOT EXISTS sessoes_caixa (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     uuid TEXT NOT NULL UNIQUE,
