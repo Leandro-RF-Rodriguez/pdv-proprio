@@ -1,8 +1,17 @@
+# Python
 venv/
 __pycache__/
-*.db
+*.pyc
 
-# PyInstaller
+# Dados locais (bancos SQLite, certificados) — nunca versionar
+dados/
+*.db
+*.pfx
+*.p12
+
+# PyInstaller (o .spec é versionado: é a receita do build)
 build/
 dist/
-*.spec
+
+# Saídas de ferramentas
+graphify-out/

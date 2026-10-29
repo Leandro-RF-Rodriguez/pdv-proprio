@@ -1,17 +1,19 @@
 """Servidor central do PDV (Fase 2).
 
 Recebe produtos e vendas enviados por um ou mais PDVs e guarda tudo num
-banco próprio (central.db). É IDEMPOTENTE: se o mesmo registro chegar duas
+banco próprio (dados/central.db). É IDEMPOTENTE: se o mesmo registro chegar duas
 vezes (identificado pelo uuid), ele ignora a repetição em vez de duplicar.
 
-Rodar com:  python3 servidor_central.py
+Rodar com:  python3 -m servidor.central   (a partir da raiz do projeto)
 Fica escutando em http://127.0.0.1:5001
 """
 
+import os
 import sqlite3
 from flask import Flask, request, jsonify
 
-BANCO_CENTRAL = "central.db"
+PASTA_DADOS = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "dados")
+BANCO_CENTRAL = os.path.join(PASTA_DADOS, "central.db")
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS produtos (
@@ -53,6 +55,7 @@ def conectar():
 
 
 def inicializar():
+    os.makedirs(PASTA_DADOS, exist_ok=True)
     conexao = conectar()
     conexao.executescript(SCHEMA)
     conexao.close()

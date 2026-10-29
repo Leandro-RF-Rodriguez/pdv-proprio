@@ -9,17 +9,20 @@ não por linha (linha muda; nome não).
 
 ```bash
 source venv/bin/activate
-python3 pdv_app.py          # abre o app (login master/master na 1ª vez)
-python3 servidor_central.py # servidor de sincronização (porta 5001)
+python3 pdv_app.py          # abre o app (login master/master na 1ª vez); = python3 -m pdv
+python3 -m servidor.central # servidor de sincronização (porta 5001)
+pyinstaller pdv-proprio.spec # gera dist/pdv-proprio
 ```
 
 - O banco é criado/migrado sozinho em `banco.inicializar()` (chamado no início).
+- Bancos locais (`pdv.db`, `central.db`) e certificados ficam em `dados/` (ignorado pelo git). Empacotado, o banco vai para `~/.pdv_proprio`.
+- Rode sempre a partir da raiz: os módulos do pacote usam import relativo (`from . import banco`).
 - Não há framework de teste no repo; os testes são scripts avulsos rodados à parte.
 
 ## Convenções (importantes)
 
 - **Dinheiro em centavos (INTEGER).** Nunca float. `banco.para_centavos` / `banco.formatar_reais` convertem. Colunas terminam em `_centavos`.
-- **Camadas separadas:** `banco.py` concentra todo SQL; a interface (`pdv_app.py`) nunca escreve SQL.
+- **Camadas separadas:** `pdv/banco.py` concentra todo SQL; a interface (`pdv/interface.py`) nunca escreve SQL.
 - **SQL parametrizado** (`?`) sempre — proteção contra injection.
 - **`uuid` + `sincronizado` + timestamps** em registros que sincronizam (produtos, vendas).
 - **Migração não-destrutiva:** colunas/tabelas novas entram em `banco._migrar` (ALTER/CREATE IF NOT EXISTS), nunca recriando o banco.
@@ -27,8 +30,10 @@ python3 servidor_central.py # servidor de sincronização (porta 5001)
 
 ## Mapa dos arquivos
 
-### `banco.py` — camada de dados (SQLite). Fonte única do schema da Fase 3.
-- **Infra:** `inicializar`, `_migrar` (cria/migra tudo), `conectar`, `agora`, caminho do banco (`CAMINHO_BANCO`, usa `~/.pdv_proprio` quando empacotado).
+Estrutura: `pdv/` (pacote do app), `servidor/` (central), `scripts/`, `assets/`, `docs/`, `dados/` (local, fora do git). `pdv_app.py` na raiz é só o ponto de entrada.
+
+### `pdv/banco.py` — camada de dados (SQLite). Fonte única do schema da Fase 3.
+- **Infra:** `inicializar`, `_migrar` (cria/migra tudo), `conectar`, `agora`, caminho do banco (`CAMINHO_BANCO`: `dados/` no código-fonte, `~/.pdv_proprio` quando empacotado), `_caminho_recurso`.
 - **Dinheiro:** `para_centavos`, `formatar_reais`.
 - **Produtos:** `COLUNAS_PRODUTO` (lista de campos), `cadastrar_produto(dados)`, `atualizar_produto(id, dados)`, `inativar_produto`, `listar_produtos` (ativos), `buscar_produtos(filtros)` (pesquisa c/ status/texto/controla/ncm/cfop/cst/origem/categoria), `obter_produto(id)`, `buscar_produto_por_codigo`.
 - **Vendas:** `registrar_venda(itens, pagamentos, sessao_id)` — transação atômica.
@@ -40,7 +45,7 @@ python3 servidor_central.py # servidor de sincronização (porta 5001)
 - **Config empresa/fiscal:** `CAMPOS_CONFIG_FISCAL` (lista), `ler_config_fiscal`, `salvar_config_fiscal` (linha única id=1).
 - **Exceções:** `CodigoDuplicado`, `CaixaJaAberto`, `LoginDuplicado`.
 
-### `pdv_app.py` — interface (CustomTkinter). Classe `AppPDV`.
+### `pdv/interface.py` — interface (CustomTkinter). Classe `AppPDV`.
 - **Tema:** dict `P` (paleta verde), `FONTE`. Helpers: `_fonte`, `_btn`, `_card`, `_entry`, `_option`, `_estilizar_tabelas`, `_titulo`.
 - **Login e entrada:** classe `TelaLogin`, função `iniciar()` (login → app; relogin via `_sair`). `AppPDV.__init__(usuario)` guarda `self.usuario`/`self.eh_master`.
 - **Barra lateral:** `_montar_barra_lateral` (telas master-only: Configuração e Usuários). `sincronizar_agora`.
@@ -52,20 +57,23 @@ python3 servidor_central.py # servidor de sincronização (porta 5001)
 - **Configuração (master):** `mostrar_config` (Empresa/Endereço/Contato/Fiscal), `_escolher_certificado`, `_salvar_config`.
 - **Usuários (master):** `mostrar_usuarios`, `_atualizar_usuarios`, `_carregar_usuario_sel`, `_criar_usuario`, `_salvar_usuario`, `_trocar_senha_usuario`, `_alternar_ativo`, `_limpar_user_form`.
 
-### `sync.py` — cliente de sincronização
+### `pdv/sync.py` — cliente de sincronização
 - `sincronizar(servidor)` envia pendentes ao central (urllib, sem dependência nova); em falha de rede, mantém pendente.
 
-### `servidor_central.py` — servidor central (Flask)
-- Endpoints `POST /sync/produtos`, `POST /sync/vendas` (idempotentes por uuid), `GET /status`. Banco próprio `central.db`.
+### `servidor/central.py` — servidor central (Flask)
+- Endpoints `POST /sync/produtos`, `POST /sync/vendas` (idempotentes por uuid), `GET /status`. Banco próprio `dados/central.db`.
 
-### `exportacao.py` — exportação de produtos
+### `pdv/exportacao.py` — exportação de produtos
 - `exportar_produtos_csv(caminho, produtos)` — CSV `;` + BOM; cabeçalho baseado no **Registro 0200 do SPED Fiscal** + colunas detalhadas. `CABECALHO` tem a ordem.
 
-### `schema.sql`
+### `pdv/schema.sql`
 - Só as tabelas-base. Tudo da Fase 3 (campos fiscais, usuarios, config_fiscal) é criado em `banco._migrar`.
 
-### `criar_banco.py`
-- Cria o banco manualmente a partir do schema (opcional; o app já cria sozinho).
+### `pdv/nfce.py` — pré-emissão de NFC-e (Fase 4, passo 1)
+- `CONFIG_OBRIGATORIA`, `PRODUTO_OBRIGATORIO`, `validar_config`, `validar_produto`, `pendencias_emissao(config, produtos)`. Usado por `AppPDV._emitir_nfce`.
+
+### `scripts/criar_banco.py`
+- Cria/migra o banco manualmente via `banco.inicializar()` (opcional; o app já faz sozinho).
 
 ## Fases
 - **Fase 1:** produtos, venda, caixa, relatório, histórico. ✅
