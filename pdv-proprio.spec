@@ -6,6 +6,9 @@ binaries = []
 hiddenimports = []
 tmp_ret = collect_all('customtkinter')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
+# Ícones (pdv/icones.py): o PIL.ImageTk carrega este módulo dinamicamente,
+# então o PyInstaller não o enxerga sozinho.
+hiddenimports += ['PIL._tkinter_finder', 'PIL.ImageTk']
 
 
 a = Analysis(
