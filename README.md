@@ -48,6 +48,11 @@ python3 pdv_app.py                # ou: python3 -m pdv (o banco é criado em dad
 python3 -m servidor.central       # servidor de sincronização (porta 5001), opcional
 ```
 
+> **Segurança:** no 1º login (`master`/`master`) o sistema obriga a trocar a senha.
+> Para exigir autenticação na sincronização, defina a mesma variável `PDV_SYNC_TOKEN`
+> no servidor e no PDV (e `PDV_SERVIDOR` no PDV, se o central estiver em outra máquina).
+> Nunca grave tokens, senhas ou certificados no código ou no git.
+
 ## 📦 Gerar o executável
 
 ```bash
@@ -63,15 +68,12 @@ pdv-proprio/
 ├── pdv_app.py            # ponto de entrada (usado também pelo PyInstaller)
 ├── pdv/                  # pacote do aplicativo de desktop
 │   ├── interface.py      # janela (CustomTkinter)
-│   ├── banco.py          # camada de acesso ao banco (todo o SQL fica aqui)
-│   ├── schema.sql        # tabelas-base
+│   ├── banco.py          # camada de acesso ao banco (todo o SQL e o schema ficam aqui)
 │   ├── sync.py           # cliente de sincronização
 │   ├── exportacao.py     # exportação de produtos (CSV)
 │   └── nfce.py           # validação de pré-emissão de NFC-e
 ├── servidor/
 │   └── central.py        # servidor central de sincronização (Flask)
-├── scripts/
-│   └── criar_banco.py    # cria/migra o banco manualmente (opcional)
 ├── assets/               # ícone e outros recursos visuais
 ├── docs/                 # screenshot e documentação
 ├── dados/                # bancos locais e certificados (fora do git)

@@ -49,11 +49,17 @@ def _linha(p):
     ]
 
 
+def _seguro(valor):
+    """Evita injeção de fórmula no Excel: texto iniciado por = + - @ vira literal."""
+    if isinstance(valor, str) and valor[:1] in ("=", "+", "-", "@", "\t", "\r"):
+        return "'" + valor
+    return valor
+
+
 def exportar_produtos_csv(caminho, produtos):
     """Grava os produtos num CSV. Devolve a quantidade exportada."""
     with open(caminho, "w", newline="", encoding="utf-8-sig") as arquivo:
         escritor = csv.writer(arquivo, delimiter=";")
         escritor.writerow(CABECALHO)
-        for produto in produtos:
-            escritor.writerow(_linha(produto))
+        escritor.writerows([_seguro(v) for v in _linha(p)] for p in produtos)
     return len(produtos)

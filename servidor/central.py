@@ -6,14 +6,21 @@ vezes (identificado pelo uuid), ele ignora a repetição em vez de duplicar.
 
 Rodar com:  python3 -m servidor.central   (a partir da raiz do projeto)
 Fica escutando em http://127.0.0.1:5001
+
+Segurança: defina PDV_SYNC_TOKEN (mesmo valor no PDV) para exigir o token em
+/sync/*. Obrigatório antes de expor o servidor fora desta máquina.
 """
 
+import hmac
 import os
 import sqlite3
-from flask import Flask, request, jsonify
+from contextlib import closing
+
+from flask import Flask, abort, jsonify, request
 
 PASTA_DADOS = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "dados")
 BANCO_CENTRAL = os.path.join(PASTA_DADOS, "central.db")
+TOKEN = os.environ.get("PDV_SYNC_TOKEN")
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS produtos (
@@ -46,6 +53,7 @@ CREATE TABLE IF NOT EXISTS pagamentos (
 """
 
 app = Flask(__name__)
+app.config["MAX_CONTENT_LENGTH"] = 16 * 1024 * 1024  # recusa corpos gigantes
 
 
 def conectar():
@@ -56,78 +64,81 @@ def conectar():
 
 def inicializar():
     os.makedirs(PASTA_DADOS, exist_ok=True)
-    conexao = conectar()
-    conexao.executescript(SCHEMA)
-    conexao.close()
+    with closing(conectar()) as conexao:
+        conexao.executescript(SCHEMA)
+
+
+def _lista_recebida():
+    """Corpo JSON validado: lista de objetos, cada um com uuid. Senão, 400."""
+    dados = request.get_json(silent=True)
+    if not isinstance(dados, list) or not all(isinstance(d, dict) and d.get("uuid") for d in dados):
+        abort(400, "Esperado: lista JSON de registros com 'uuid'.")
+    return dados
+
+
+@app.before_request
+def _exigir_token():
+    if TOKEN and request.path.startswith("/sync/"):
+        enviado = request.headers.get("Authorization", "").removeprefix("Bearer ")
+        if not hmac.compare_digest(enviado, TOKEN):
+            abort(401)
 
 
 @app.route("/sync/produtos", methods=["POST"])
 def sync_produtos():
-    produtos = request.get_json() or []
-    conexao = conectar()
-    recebidos = 0
-    for p in produtos:
+    produtos = _lista_recebida()
+    with closing(conectar()) as conexao, conexao:
         # INSERT OR REPLACE pelo uuid: cria ou atualiza, nunca duplica.
-        conexao.execute(
+        conexao.executemany(
             """INSERT OR REPLACE INTO produtos
                (uuid, codigo, descricao, preco_centavos, ativo, criado_em, atualizado_em)
                VALUES (?, ?, ?, ?, ?, ?, ?)""",
-            (
-                p["uuid"], p.get("codigo"), p.get("descricao"),
-                p.get("preco_centavos"), p.get("ativo"),
-                p.get("criado_em"), p.get("atualizado_em"),
-            ),
+            [
+                (p["uuid"], p.get("codigo"), p.get("descricao"), p.get("preco_centavos"),
+                 p.get("ativo"), p.get("criado_em"), p.get("atualizado_em"))
+                for p in produtos
+            ],
         )
-        recebidos += 1
-    conexao.commit()
-    conexao.close()
-    return jsonify({"recebidos": recebidos}), 200
+    return jsonify({"recebidos": len(produtos)}), 200
 
 
 @app.route("/sync/vendas", methods=["POST"])
 def sync_vendas():
-    vendas = request.get_json() or []
-    conexao = conectar()
-    novas, ignoradas = 0, 0
-    for v in vendas:
-        existe = conexao.execute(
-            "SELECT 1 FROM vendas WHERE uuid = ?", (v["uuid"],)
-        ).fetchone()
-        if existe:
-            ignoradas += 1  # idempotência: já temos esta venda
-            continue
-        conexao.execute(
-            "INSERT INTO vendas (uuid, total_centavos, status, criado_em) VALUES (?, ?, ?, ?)",
-            (v["uuid"], v.get("total_centavos"), v.get("status"), v.get("criado_em")),
-        )
-        for item in v.get("itens", []):
-            conexao.execute(
+    vendas = _lista_recebida()
+    novas = 0
+    with closing(conectar()) as conexao, conexao:
+        for v in vendas:
+            inserida = conexao.execute(
+                "INSERT OR IGNORE INTO vendas (uuid, total_centavos, status, criado_em) VALUES (?, ?, ?, ?)",
+                (v["uuid"], v.get("total_centavos"), v.get("status"), v.get("criado_em")),
+            ).rowcount
+            if not inserida:
+                continue  # idempotência: já temos esta venda
+            conexao.executemany(
                 """INSERT INTO itens_venda
                    (venda_uuid, produto_uuid, quantidade, preco_unit_centavos, subtotal_centavos)
                    VALUES (?, ?, ?, ?, ?)""",
-                (
-                    v["uuid"], item.get("produto_uuid"), item.get("quantidade"),
-                    item.get("preco_unit_centavos"), item.get("subtotal_centavos"),
-                ),
+                [
+                    (v["uuid"], i.get("produto_uuid"), i.get("quantidade"),
+                     i.get("preco_unit_centavos"), i.get("subtotal_centavos"))
+                    for i in v.get("itens", [])
+                ],
             )
-        for pg in v.get("pagamentos", []):
-            conexao.execute(
+            conexao.executemany(
                 "INSERT INTO pagamentos (venda_uuid, forma, valor_centavos) VALUES (?, ?, ?)",
-                (v["uuid"], pg.get("forma"), pg.get("valor_centavos")),
+                [(v["uuid"], pg.get("forma"), pg.get("valor_centavos")) for pg in v.get("pagamentos", [])],
             )
-        novas += 1
-    conexao.commit()
-    conexao.close()
-    return jsonify({"novas": novas, "ignoradas": ignoradas}), 200
+            novas += 1
+    return jsonify({"novas": novas, "ignoradas": len(vendas) - novas}), 200
 
 
 @app.route("/status", methods=["GET"])
 def status():
-    conexao = conectar()
-    prod = conexao.execute("SELECT COUNT(*) FROM produtos").fetchone()[0]
-    vend = conexao.execute("SELECT COUNT(*) FROM vendas").fetchone()[0]
-    total = conexao.execute("SELECT COALESCE(SUM(total_centavos), 0) FROM vendas").fetchone()[0]
-    conexao.close()
+    with closing(conectar()) as conexao:
+        prod, vend, total = conexao.execute(
+            """SELECT (SELECT COUNT(*) FROM produtos), (SELECT COUNT(*) FROM vendas),
+                      (SELECT COALESCE(SUM(total_centavos), 0) FROM vendas)"""
+        ).fetchone()
     return jsonify({"produtos": prod, "vendas": vend, "total_vendido_centavos": total})
 
 
