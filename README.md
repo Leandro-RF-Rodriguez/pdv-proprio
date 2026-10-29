@@ -17,7 +17,7 @@ Funciona 100% no computador, sem depender de internet para operar. A sincroniza�
 
 | Camada | Tecnologia |
 | --- | --- |
-| Interface | [CustomTkinter](https://github.com/TomSchimansky/CustomTkinter) (desktop, leve e moderno) |
+| Interface | [CustomTkinter](https://github.com/TomSchimansky/CustomTkinter) (desktop, leve e moderno) + Pillow (ícones) |
 | Lógica / dados | Python 3 + SQLite |
 | Empacotamento | PyInstaller (executável instalável) |
 
@@ -67,10 +67,11 @@ O executável fica em `dist/pdv-proprio`.
 pdv-proprio/
 ├── pdv_app.py            # ponto de entrada (usado também pelo PyInstaller)
 ├── pdv/                  # pacote do aplicativo de desktop
-│   ├── interface.py      # janela (CustomTkinter)
+│   ├── interface.py      # janela (CustomTkinter), visual do protótipo do Figma
+│   ├── icones.py         # ícones de traço desenhados com Pillow
 │   ├── banco.py          # camada de acesso ao banco (todo o SQL e o schema ficam aqui)
 │   ├── sync.py           # cliente de sincronização
-│   ├── exportacao.py     # exportação de produtos (CSV)
+│   ├── exportacao.py     # exportação de produtos e vendas (CSV)
 │   └── nfce.py           # validação de pré-emissão de NFC-e
 ├── servidor/
 │   └── central.py        # servidor central de sincronização (Flask)

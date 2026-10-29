@@ -227,7 +227,29 @@ def _migrar():
             "complemento", "bairro", "municipio", "cod_municipio",
             "telefone", "email", "serie", "proximo_numero",
         ), "TEXT"))
+        # Desconto na venda (total_centavos já vem com o desconto aplicado)
+        _adicionar_colunas(conexao, "vendas", {"desconto_centavos": "INTEGER NOT NULL DEFAULT 0"})
+        # Preferências locais da estação (ex.: último usuário lembrado no login)
+        conexao.execute("CREATE TABLE IF NOT EXISTS preferencias (chave TEXT PRIMARY KEY, valor TEXT)")
         conexao.executescript(INDICES)
+
+
+# ---------- Preferências locais ----------
+def ler_preferencia(chave, padrao=None):
+    linha = _um("SELECT valor FROM preferencias WHERE chave = ?", (chave,))
+    return linha["valor"] if linha else padrao
+
+
+def salvar_preferencia(chave, valor):
+    """Grava (ou apaga, com valor None) uma preferência local."""
+    if valor is None:
+        _executar("DELETE FROM preferencias WHERE chave = ?", (chave,))
+    else:
+        _executar(
+            "INSERT INTO preferencias (chave, valor) VALUES (?, ?) "
+            "ON CONFLICT(chave) DO UPDATE SET valor = excluded.valor",
+            (chave, valor),
+        )
 
 
 # ---------- Conversão de dinheiro ----------
@@ -266,6 +288,17 @@ def _valores_produto(dados):
 def listar_produtos():
     """Retorna os produtos ativos, em ordem alfabética."""
     return _todos("SELECT * FROM produtos WHERE ativo = 1 ORDER BY descricao COLLATE NOCASE")
+
+
+def listar_categorias():
+    """Categorias usadas pelos produtos ativos (para as abas da tela de Venda)."""
+    return [
+        linha["categoria"] for linha in _todos(
+            """SELECT DISTINCT categoria FROM produtos
+               WHERE ativo = 1 AND categoria IS NOT NULL AND TRIM(categoria) <> ''
+               ORDER BY categoria COLLATE NOCASE"""
+        )
+    ]
 
 
 def cadastrar_produto(dados):
@@ -357,22 +390,24 @@ def buscar_produto_por_codigo(codigo):
 
 
 # ---------- Vendas ----------
-def registrar_venda(itens, pagamentos, sessao_id=None):
+def registrar_venda(itens, pagamentos, sessao_id=None, desconto_centavos=0):
     """Grava uma venda inteira de forma ATÔMICA.
 
     itens: lista de {produto_id, quantidade, preco_unit_centavos}
-    pagamentos: lista de {forma, valor_centavos}
+    pagamentos: lista de {forma, valor_centavos} — somam o total já com desconto
+    desconto_centavos: abatido da soma dos itens (nunca maior que ela)
 
     Ou grava tudo (venda + itens + pagamentos), ou nada (rollback).
     Devolve (venda_id, total_centavos).
     """
     subtotais = [subtotal_centavos(i) for i in itens]
-    total = sum(subtotais)
+    desconto = max(0, min(desconto_centavos, sum(subtotais)))
+    total = sum(subtotais) - desconto
     with _conexao() as conexao:
         venda_id = conexao.execute(
-            """INSERT INTO vendas (uuid, sessao_id, total_centavos, status, criado_em)
-               VALUES (?, ?, ?, 'concluida', ?)""",
-            (_novo_uuid(), sessao_id, total, agora()),
+            """INSERT INTO vendas (uuid, sessao_id, total_centavos, desconto_centavos, status, criado_em)
+               VALUES (?, ?, ?, ?, 'concluida', ?)""",
+            (_novo_uuid(), sessao_id, total, desconto, agora()),
         ).lastrowid
         conexao.executemany(
             """INSERT INTO itens_venda
@@ -390,18 +425,38 @@ def registrar_venda(itens, pagamentos, sessao_id=None):
     return venda_id, total
 
 
-def listar_vendas(limite=200):
-    """Vendas concluídas, mais recentes primeiro, com resumo de itens e formas."""
+def _intervalo_dias(inicio, fim):
+    """[inicio, fim+1) em ISO, para usar o índice de criado_em (sem substr)."""
+    return inicio, (date.fromisoformat(fim) + timedelta(days=1)).isoformat()
+
+
+def listar_vendas(inicio=None, fim=None, forma=None, limite=500):
+    """Vendas concluídas, mais recentes primeiro, com resumo de itens e formas.
+
+    inicio/fim: datas ISO (AAAA-MM-DD), inclusivas. forma: só vendas com essa forma.
+    """
+    clausulas, params = ["v.status = 'concluida'"], []
+    if inicio and fim:
+        clausulas.append("v.criado_em >= ? AND v.criado_em < ?")
+        params += _intervalo_dias(inicio, fim)
+    if forma:
+        clausulas.append("EXISTS (SELECT 1 FROM pagamentos WHERE venda_id = v.id AND forma = ?)")
+        params.append(forma)
     return _todos(
-        """SELECT v.id, v.total_centavos, v.criado_em,
-                  (SELECT COUNT(*) FROM itens_venda WHERE venda_id = v.id) AS qtd_itens,
-                  (SELECT GROUP_CONCAT(forma, ', ') FROM pagamentos WHERE venda_id = v.id) AS formas
-           FROM vendas v
-           WHERE v.status = 'concluida'
-           ORDER BY v.id DESC
-           LIMIT ?""",
-        (limite,),
+        f"""SELECT v.id, v.total_centavos, v.desconto_centavos, v.criado_em,
+                   (SELECT COUNT(*) FROM itens_venda WHERE venda_id = v.id) AS qtd_itens,
+                   (SELECT GROUP_CONCAT(forma, ', ') FROM pagamentos WHERE venda_id = v.id) AS formas
+            FROM vendas v
+            WHERE {" AND ".join(clausulas)}
+            ORDER BY v.id DESC
+            LIMIT ?""",
+        (*params, limite),
     )
+
+
+def proximo_numero_venda():
+    """Número que a próxima venda deve receber (exibido no topo da tela de Venda)."""
+    return _um("SELECT COALESCE(MAX(id), 0) + 1 AS n FROM vendas")["n"]
 
 
 # ---------- Caixa ----------
@@ -443,7 +498,13 @@ def resumo_caixa(sessao_id):
                     WHERE v.sessao_id = s.id AND v.status = 'concluida'
                       AND p.forma = 'Dinheiro') AS vendas_dinheiro,
                   (SELECT COALESCE(SUM(total_centavos), 0) FROM vendas
-                    WHERE sessao_id = s.id AND status = 'concluida') AS vendas_total
+                    WHERE sessao_id = s.id AND status = 'concluida') AS vendas_total,
+                  (SELECT COUNT(*) FROM vendas
+                    WHERE sessao_id = s.id AND status = 'concluida') AS qtd_vendas,
+                  (SELECT COUNT(*) FROM movimentos_caixa
+                    WHERE sessao_id = s.id AND tipo = 'suprimento') AS qtd_suprimentos,
+                  (SELECT COUNT(*) FROM movimentos_caixa
+                    WHERE sessao_id = s.id AND tipo = 'sangria') AS qtd_sangrias
            FROM sessoes_caixa s WHERE s.id = ?""",
         (sessao_id,),
     )
@@ -452,6 +513,29 @@ def resumo_caixa(sessao_id):
         resumo["abertura"] + resumo["suprimentos"] + resumo["vendas_dinheiro"] - resumo["sangrias"]
     )
     return resumo
+
+
+def movimentos_sessao(sessao_id, limite=100):
+    """Linha do tempo do turno: abertura, suprimentos, sangrias e vendas (mais recentes primeiro).
+
+    Cada linha: {tipo, detalhe, criado_em, valor_centavos}. tipo: abertura | suprimento |
+    sangria | venda (detalhe = formas de pagamento; o id vai em `venda_id`).
+    """
+    return _todos(
+        """SELECT * FROM (
+               SELECT 'abertura' AS tipo, operador AS detalhe, aberto_em AS criado_em,
+                      abertura_centavos AS valor_centavos, NULL AS venda_id
+                 FROM sessoes_caixa WHERE id = :s
+               UNION ALL
+               SELECT tipo, motivo, criado_em, valor_centavos, NULL
+                 FROM movimentos_caixa WHERE sessao_id = :s
+               UNION ALL
+               SELECT 'venda', (SELECT GROUP_CONCAT(forma, ', ') FROM pagamentos WHERE venda_id = v.id),
+                      criado_em, total_centavos, id
+                 FROM vendas v WHERE sessao_id = :s AND status = 'concluida'
+           ) ORDER BY criado_em DESC LIMIT :limite""",
+        {"s": sessao_id, "limite": limite},
+    )
 
 
 def fechar_caixa(sessao_id, fechamento_centavos):
@@ -464,24 +548,51 @@ def fechar_caixa(sessao_id, fechamento_centavos):
 
 # ---------- Relatório ----------
 def relatorio_dia(data=None):
-    """Resumo das vendas de um dia (padrão: hoje). Valores em centavos."""
+    """Resumo das vendas de um dia (padrão: hoje). Valores em centavos.
+
+    por_forma: [(forma, valor, qtd_vendas)]; mais_vendidos: [{descricao, unidade, quantidade, valor}].
+    """
     data = data or date.today().isoformat()
     # Intervalo [dia, dia+1) em vez de substr(): assim o índice de criado_em é usado.
-    intervalo = (data, (date.fromisoformat(data) + timedelta(days=1)).isoformat())
+    intervalo = _intervalo_dias(data, data)
+    ontem = (date.fromisoformat(data) - timedelta(days=1)).isoformat()
+    concluidas = "v.status = 'concluida' AND v.criado_em >= ? AND v.criado_em < ?"
     with _conexao() as conexao:
         qtd, total = conexao.execute(
-            "SELECT COUNT(*), COALESCE(SUM(total_centavos), 0) FROM vendas "
-            "WHERE status = 'concluida' AND criado_em >= ? AND criado_em < ?",
+            f"SELECT COUNT(*), COALESCE(SUM(total_centavos), 0) FROM vendas v WHERE {concluidas}",
             intervalo,
         ).fetchone()
+        total_ontem = conexao.execute(
+            f"SELECT COALESCE(SUM(total_centavos), 0) FROM vendas v WHERE {concluidas}",
+            _intervalo_dias(ontem, ontem),
+        ).fetchone()[0]
+        itens = conexao.execute(
+            f"""SELECT COALESCE(SUM(iv.quantidade), 0) FROM itens_venda iv
+                JOIN vendas v ON v.id = iv.venda_id WHERE {concluidas}""",
+            intervalo,
+        ).fetchone()[0]
         por_forma = conexao.execute(
-            """SELECT p.forma, SUM(p.valor_centavos)
-               FROM pagamentos p JOIN vendas v ON v.id = p.venda_id
-               WHERE v.status = 'concluida' AND v.criado_em >= ? AND v.criado_em < ?
-               GROUP BY p.forma ORDER BY p.forma""",
+            f"""SELECT p.forma, SUM(p.valor_centavos), COUNT(DISTINCT v.id)
+                FROM pagamentos p JOIN vendas v ON v.id = p.venda_id
+                WHERE {concluidas}
+                GROUP BY p.forma ORDER BY SUM(p.valor_centavos) DESC""",
             intervalo,
         ).fetchall()
-    return {"data": data, "qtd": qtd, "total": total, "por_forma": [tuple(l) for l in por_forma]}
+        mais_vendidos = conexao.execute(
+            f"""SELECT pr.descricao, pr.unidade, SUM(iv.quantidade) AS quantidade,
+                       SUM(iv.subtotal_centavos) AS valor
+                FROM itens_venda iv
+                JOIN vendas v ON v.id = iv.venda_id
+                JOIN produtos pr ON pr.id = iv.produto_id
+                WHERE {concluidas}
+                GROUP BY iv.produto_id ORDER BY quantidade DESC, valor DESC LIMIT 5""",
+            intervalo,
+        ).fetchall()
+    return {
+        "data": data, "qtd": qtd, "total": total, "total_ontem": total_ontem, "itens": itens,
+        "por_forma": [tuple(l) for l in por_forma],
+        "mais_vendidos": [dict(l) for l in mais_vendidos],
+    }
 
 
 # ---------- Sincronização (Fase 2) ----------

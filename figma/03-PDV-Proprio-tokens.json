@@ -1,0 +1,46 @@
+{
+  "color": {
+    "primary": "#173f35",
+    "primary_strong": "#0d2c25",
+    "primary_soft": "#d8efe0",
+    "accent": "#a9c95d",
+    "accent_strong": "#52712f",
+    "accent_soft": "#eaf3d8",
+    "success": "#34755f",
+    "text": "#18342d",
+    "muted": "#728079",
+    "border": "#cfe2d6",
+    "surface": "#f8fdf9",
+    "canvas": "#e6f5eb",
+    "danger": "#b03a2e",
+    "danger_strong": "#8c2d24",
+    "white": "#ffffff",
+    "sidebar_muted": "#8fb6a6"
+  },
+  "font": {
+    "family": "Manrope",
+    "size": { "screen_title": 26, "total": 26, "kpi": 22, "section": 16, "card_title": 15, "body": 13, "label": 12, "small": 11, "caption": 10 },
+    "weight": { "regular": 400, "bold": 700 }
+  },
+  "radius": { "card": 15, "login_card": 16, "button": 11, "input": 10, "cart_item": 12, "mini_button": 8, "logo": 13 },
+  "spacing": { "content_margin": 24, "block_gap": 14, "card_padding": 14, "grid_gap": 6 },
+  "size": {
+    "window": { "width": 1040, "height": 700, "min_width": 880, "min_height": 580 },
+    "login_window": { "width": 380, "height": 460 },
+    "sidebar_width": 200,
+    "sidebar_button_width": 168,
+    "checkout_width": 350,
+    "product_card_height": 78,
+    "table_row_height": 30,
+    "logo": 46,
+    "login_logo": 56,
+    "mini_button": { "width": 26, "height": 24 }
+  },
+  "button": {
+    "primario":   { "fill": "primary", "hover": "primary_strong", "text": "white" },
+    "secundario": { "fill": "surface", "hover": "primary_soft", "text": "primary", "border": "border" },
+    "perigo":     { "fill": "danger", "hover": "danger_strong", "text": "white" },
+    "accent":     { "fill": "accent", "hover": "accent_strong", "text": "primary_strong" },
+    "sidebar":    { "fill": "transparent", "hover": "primary_strong", "text": "white", "align": "left" }
+  }
+}

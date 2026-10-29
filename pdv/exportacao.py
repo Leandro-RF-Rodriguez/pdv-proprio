@@ -63,3 +63,22 @@ def exportar_produtos_csv(caminho, produtos):
         escritor.writerow(CABECALHO)
         escritor.writerows([_seguro(v) for v in _linha(p)] for p in produtos)
     return len(produtos)
+
+
+CABECALHO_VENDAS = ["VENDA", "DATA_HORA", "ITENS", "PAGAMENTO", "DESCONTO", "TOTAL"]
+
+
+def exportar_vendas_csv(caminho, vendas):
+    """Grava o histórico de vendas (o filtro atual da tela) num CSV. Devolve a quantidade."""
+    with open(caminho, "w", newline="", encoding="utf-8-sig") as arquivo:
+        escritor = csv.writer(arquivo, delimiter=";")
+        escritor.writerow(CABECALHO_VENDAS)
+        escritor.writerows(
+            [_seguro(v) for v in (
+                venda["id"], venda["criado_em"].replace("T", " "), venda["qtd_itens"],
+                venda.get("formas") or "", banco.formatar_reais(venda.get("desconto_centavos") or 0),
+                banco.formatar_reais(venda["total_centavos"]),
+            )]
+            for venda in vendas
+        )
+    return len(vendas)
