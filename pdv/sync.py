@@ -6,7 +6,7 @@ quando o envio é confirmado, marca cada registro como sincronizado.
 Usa apenas a biblioteca padrão (urllib), sem dependências novas.
 
 Uso:
-    import sync
+    from pdv import sync
     resultado = sync.sincronizar()           # servidor padrão (localhost:5001)
     resultado = sync.sincronizar("http://192.168.0.50:5001")
 """
@@ -15,7 +15,7 @@ import json
 import urllib.error
 import urllib.request
 
-import banco
+from . import banco
 
 SERVIDOR_PADRAO = "http://127.0.0.1:5001"
 

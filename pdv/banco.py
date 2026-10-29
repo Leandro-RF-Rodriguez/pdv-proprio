@@ -17,20 +17,23 @@ from datetime import datetime
 def _caminho_recurso(nome):
     """Acha um arquivo que acompanha o app (ex.: schema.sql).
 
-    Quando empacotado pelo PyInstaller, os recursos ficam em sys._MEIPASS.
-    Rodando pelo código-fonte, ficam na pasta deste arquivo.
+    Quando empacotado pelo PyInstaller, os recursos ficam em sys._MEIPASS/pdv.
+    Rodando pelo código-fonte, ficam na pasta deste arquivo (o pacote pdv/).
     """
-    base = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
+    if hasattr(sys, "_MEIPASS"):
+        base = os.path.join(sys._MEIPASS, "pdv")
+    else:
+        base = os.path.dirname(os.path.abspath(__file__))
     return os.path.join(base, nome)
 
 
 # Onde guardar o banco:
 # - empacotado (executável): numa pasta fixa no perfil do usuário
-# - rodando o código: na própria pasta do projeto (facilita o desenvolvimento)
+# - rodando o código: em dados/ na raiz do projeto (facilita o desenvolvimento)
 if getattr(sys, "frozen", False):
     PASTA_DADOS = os.path.join(os.path.expanduser("~"), ".pdv_proprio")
 else:
-    PASTA_DADOS = os.path.dirname(os.path.abspath(__file__))
+    PASTA_DADOS = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "dados")
 
 CAMINHO_BANCO = os.path.join(PASTA_DADOS, "pdv.db")
 

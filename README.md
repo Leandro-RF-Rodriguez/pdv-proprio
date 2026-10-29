@@ -44,14 +44,14 @@ A venda é gravada em uma **transação atômica**: ou grava a venda, seus itens
 python3 -m venv venv
 source venv/bin/activate          # no Windows: venv\Scripts\activate
 pip install -r requirements.txt
-python3 pdv_app.py                # o banco é criado automaticamente na 1ª vez
+python3 pdv_app.py                # ou: python3 -m pdv (o banco é criado em dados/ na 1ª vez)
+python3 -m servidor.central       # servidor de sincronização (porta 5001), opcional
 ```
 
 ## 📦 Gerar o executável
 
 ```bash
-pyinstaller --onefile --windowed --name pdv-proprio \
-  --add-data "schema.sql:." --collect-all customtkinter pdv_app.py
+pyinstaller pdv-proprio.spec
 ```
 
 O executável fica em `dist/pdv-proprio`.
@@ -60,11 +60,23 @@ O executável fica em `dist/pdv-proprio`.
 
 ```
 pdv-proprio/
-├── schema.sql        # definição das tabelas
-├── banco.py          # camada de acesso ao banco (SQL isolado)
-├── pdv_app.py        # aplicativo de desktop (interface)
-├── criar_banco.py    # cria o banco manualmente (opcional)
-└── requirements.txt  # dependências
+├── pdv_app.py            # ponto de entrada (usado também pelo PyInstaller)
+├── pdv/                  # pacote do aplicativo de desktop
+│   ├── interface.py      # janela (CustomTkinter)
+│   ├── banco.py          # camada de acesso ao banco (todo o SQL fica aqui)
+│   ├── schema.sql        # tabelas-base
+│   ├── sync.py           # cliente de sincronização
+│   ├── exportacao.py     # exportação de produtos (CSV)
+│   └── nfce.py           # validação de pré-emissão de NFC-e
+├── servidor/
+│   └── central.py        # servidor central de sincronização (Flask)
+├── scripts/
+│   └── criar_banco.py    # cria/migra o banco manualmente (opcional)
+├── assets/               # ícone e outros recursos visuais
+├── docs/                 # screenshot e documentação
+├── dados/                # bancos locais e certificados (fora do git)
+├── pdv-proprio.spec      # receita do PyInstaller
+└── requirements.txt      # dependências
 ```
 
 ## 🗺️ Roadmap

@@ -9,7 +9,7 @@ Arquivo: CSV com separador ';' e BOM (utf-8-sig), abre direto no Excel/BR.
 
 import csv
 
-import banco
+from . import banco
 
 # Colunas 0200 do SPED (COD_ITEM, DESCR_ITEM, COD_BARRA, UNID_INV, TIPO_ITEM,
 # COD_NCM, EX_IPI, CEST, ALIQ_ICMS) + dados complementares.
