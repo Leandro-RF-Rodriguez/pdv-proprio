@@ -136,6 +136,16 @@ def _centavos_ou_zero(texto):
 class _Estilo:
     """Componentes visuais compartilhados pela janela de login e pelo app."""
 
+    def _fechar(self):
+        """Fecha a janela cancelando antes os `after` pendentes do CustomTkinter.
+
+        Sem isso, animações de clique e checagens de DPI disparam depois do destroy
+        e o terminal mostra 'invalid command name ...'.
+        """
+        for agendado in self.tk.call("after", "info"):
+            self.after_cancel(agendado)
+        self.destroy()
+
     def _fonte(self, tamanho=13, negrito=False):
         # Reaproveita a mesma fonte: criar um CTkFont por widget custa caro.
         chave = (tamanho, negrito)
@@ -304,6 +314,7 @@ class AppPDV(_Estilo, ctk.CTk):
         self.geometry("1280x780")
         self.minsize(1100, 680)
         self.configure(fg_color=P["canvas"])
+        self.protocol("WM_DELETE_WINDOW", self._fechar)
 
         self.carrinho = []
         self.produto_sel_id = None
@@ -631,7 +642,7 @@ class AppPDV(_Estilo, ctk.CTk):
 
     def _sair(self):
         self.relogar = True  # iniciar() reabre a tela de login
-        self.destroy()
+        self._fechar()
 
     def sincronizar_agora(self):
         pendentes = banco.contar_pendentes()
@@ -2130,6 +2141,7 @@ class TelaLogin(_Estilo, ctk.CTk):
         self.geometry("1040x640")
         self.minsize(900, 580)
         self.configure(fg_color="#f8fbf9")
+        self.protocol("WM_DELETE_WINDOW", self._fechar)
         self.grid_columnconfigure(0, weight=5, uniform="login")
         self.grid_columnconfigure(1, weight=6, uniform="login")
         self.grid_rowconfigure(0, weight=1)
@@ -2224,7 +2236,7 @@ class TelaLogin(_Estilo, ctk.CTk):
             banco.alterar_senha_usuario(usuario["id"], nova)
         banco.salvar_preferencia("ultimo_login", login if self.lembrar.get() else None)
         self.usuario = usuario
-        self.destroy()
+        self._fechar()
 
 
 def iniciar():
