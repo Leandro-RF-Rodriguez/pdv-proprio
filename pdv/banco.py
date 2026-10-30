@@ -212,6 +212,8 @@ def _migrar():
             "origem": "TEXT DEFAULT '0'", "cst": "TEXT",
             "aliquota_icms": "REAL DEFAULT 0", "aliquota_aprox": "REAL DEFAULT 0",
         })
+        # Foto do produto: nome do arquivo em <dados>/imagens (pdv/imagens.py)
+        _adicionar_colunas(conexao, "produtos", {"foto_arquivo": "TEXT"})
         # Cadastro detalhado de usuários + troca de senha obrigatória
         novas = _adicionar_colunas(conexao, "usuarios", {
             "nome": "TEXT", "email": "TEXT", "trocar_senha": "INTEGER NOT NULL DEFAULT 0",
@@ -226,9 +228,12 @@ def _migrar():
             "nome_fantasia", "im", "crt", "cep", "logradouro", "numero",
             "complemento", "bairro", "municipio", "cod_municipio",
             "telefone", "email", "serie", "proximo_numero",
+            "logo_arquivo",  # nome do arquivo em <dados>/imagens (pdv/imagens.py)
         ), "TEXT"))
         # Desconto na venda (total_centavos já vem com o desconto aplicado)
         _adicionar_colunas(conexao, "vendas", {"desconto_centavos": "INTEGER NOT NULL DEFAULT 0"})
+        # Troco dado em dinheiro (os pagamentos guardam o valor devido, não o recebido)
+        _adicionar_colunas(conexao, "vendas", {"troco_centavos": "INTEGER NOT NULL DEFAULT 0"})
         # Preferências locais da estação (ex.: último usuário lembrado no login)
         conexao.execute("CREATE TABLE IF NOT EXISTS preferencias (chave TEXT PRIMARY KEY, valor TEXT)")
         conexao.executescript(INDICES)
@@ -276,7 +281,7 @@ _PADROES_PRODUTO = {
     "codigo": None, "codigo_interno": None, "descricao": None, "categoria": None,
     "unidade": "UN", "tipo_item": "00", "preco_centavos": 0, "custo_centavos": 0,
     "estoque": 0, "controla_estoque": 0, "ncm": None, "cest": None, "cfop": None,
-    "origem": "0", "cst": None, "aliquota_icms": 0, "aliquota_aprox": 0,
+    "origem": "0", "cst": None, "aliquota_icms": 0, "aliquota_aprox": 0, "foto_arquivo": None,
 }
 COLUNAS_PRODUTO = list(_PADROES_PRODUTO)
 
@@ -390,12 +395,13 @@ def buscar_produto_por_codigo(codigo):
 
 
 # ---------- Vendas ----------
-def registrar_venda(itens, pagamentos, sessao_id=None, desconto_centavos=0):
+def registrar_venda(itens, pagamentos, sessao_id=None, desconto_centavos=0, troco_centavos=0):
     """Grava uma venda inteira de forma ATÔMICA.
 
     itens: lista de {produto_id, quantidade, preco_unit_centavos}
     pagamentos: lista de {forma, valor_centavos} — somam o total já com desconto
     desconto_centavos: abatido da soma dos itens (nunca maior que ela)
+    troco_centavos: troco devolvido ao cliente (só informativo; não entra no total)
 
     Ou grava tudo (venda + itens + pagamentos), ou nada (rollback).
     Devolve (venda_id, total_centavos).
@@ -405,9 +411,10 @@ def registrar_venda(itens, pagamentos, sessao_id=None, desconto_centavos=0):
     total = sum(subtotais) - desconto
     with _conexao() as conexao:
         venda_id = conexao.execute(
-            """INSERT INTO vendas (uuid, sessao_id, total_centavos, desconto_centavos, status, criado_em)
-               VALUES (?, ?, ?, ?, 'concluida', ?)""",
-            (_novo_uuid(), sessao_id, total, desconto, agora()),
+            """INSERT INTO vendas
+               (uuid, sessao_id, total_centavos, desconto_centavos, troco_centavos, status, criado_em)
+               VALUES (?, ?, ?, ?, ?, 'concluida', ?)""",
+            (_novo_uuid(), sessao_id, total, desconto, max(0, troco_centavos), agora()),
         ).lastrowid
         conexao.executemany(
             """INSERT INTO itens_venda
@@ -452,6 +459,25 @@ def listar_vendas(inicio=None, fim=None, forma=None, limite=500):
             LIMIT ?""",
         (*params, limite),
     )
+
+
+def detalhes_venda(venda_id):
+    """Uma venda com seus itens (descrição, código, unidade) e pagamentos. None se não existe."""
+    with _conexao() as conexao:
+        venda = conexao.execute("SELECT * FROM vendas WHERE id = ?", (venda_id,)).fetchone()
+        if not venda:
+            return None
+        itens = conexao.execute(
+            """SELECT iv.quantidade, iv.preco_unit_centavos, iv.subtotal_centavos,
+                      p.descricao, p.codigo, p.unidade
+               FROM itens_venda iv JOIN produtos p ON p.id = iv.produto_id
+               WHERE iv.venda_id = ? ORDER BY iv.id""",
+            (venda_id,),
+        ).fetchall()
+        pagamentos = conexao.execute(
+            "SELECT forma, valor_centavos FROM pagamentos WHERE venda_id = ? ORDER BY id", (venda_id,),
+        ).fetchall()
+    return dict(venda, itens=[dict(i) for i in itens], pagamentos=[dict(p) for p in pagamentos])
 
 
 def proximo_numero_venda():
@@ -732,8 +758,8 @@ CAMPOS_CONFIG_FISCAL = [
     # Endereço
     "cep", "logradouro", "numero", "complemento", "bairro",
     "municipio", "cod_municipio", "uf",
-    # Contato
-    "telefone", "email",
+    # Contato e marca
+    "telefone", "email", "logo_arquivo",
     # Fiscal / NFC-e
     "ambiente", "serie", "proximo_numero",
     "certificado_caminho", "certificado_senha", "csc", "csc_id",

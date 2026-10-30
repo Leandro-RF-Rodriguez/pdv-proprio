@@ -62,10 +62,19 @@ def conectar():
     return conexao
 
 
+# Colunas posteriores ao SCHEMA: entram com ALTER, sem recriar o banco.
+COLUNAS_NOVAS = {"vendas": {"desconto_centavos": "INTEGER DEFAULT 0", "troco_centavos": "INTEGER DEFAULT 0"}}
+
+
 def inicializar():
     os.makedirs(PASTA_DADOS, exist_ok=True)
-    with closing(conectar()) as conexao:
+    with closing(conectar()) as conexao, conexao:
         conexao.executescript(SCHEMA)
+        for tabela, colunas in COLUNAS_NOVAS.items():
+            existentes = {linha[1] for linha in conexao.execute(f"PRAGMA table_info({tabela})")}
+            for coluna, tipo in colunas.items():
+                if coluna not in existentes:
+                    conexao.execute(f"ALTER TABLE {tabela} ADD COLUMN {coluna} {tipo}")
 
 
 def _lista_recebida():
@@ -109,8 +118,11 @@ def sync_vendas():
     with closing(conectar()) as conexao, conexao:
         for v in vendas:
             inserida = conexao.execute(
-                "INSERT OR IGNORE INTO vendas (uuid, total_centavos, status, criado_em) VALUES (?, ?, ?, ?)",
-                (v["uuid"], v.get("total_centavos"), v.get("status"), v.get("criado_em")),
+                """INSERT OR IGNORE INTO vendas
+                   (uuid, total_centavos, desconto_centavos, troco_centavos, status, criado_em)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (v["uuid"], v.get("total_centavos"), v.get("desconto_centavos", 0),
+                 v.get("troco_centavos", 0), v.get("status"), v.get("criado_em")),
             ).rowcount
             if not inserida:
                 continue  # idempotência: já temos esta venda

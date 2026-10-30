@@ -20,6 +20,7 @@ import customtkinter as ctk
 
 from . import banco
 from . import exportacao
+from . import imagens
 from . import nfce
 from . import sync
 from .icones import icone
@@ -35,6 +36,8 @@ UNIDADES_FRACIONADAS = ("KG", "G", "L", "ML", "M")  # no carrinho, −/+ andam d
 LARGURA_CARTAO = 200     # largura mínima de um cartão do catálogo: define quantas colunas cabem
 COLUNAS_CATALOGO = (3, 5)  # mínimo e máximo de colunas do catálogo
 NOTAS = (1000, 2000, 5000, 10000, 20000)  # atalhos de "valor recebido" (centavos)
+ESCALAS_FONTE = {"P": 0.9, "M": 1.0, "G": 1.15}  # tamanho da letra (menu de perfil), por usuário
+ALTURA_TOUCH = 48        # altura mínima de botões e campos no "modo touch"
 
 # Explicações em linguagem simples para os campos fiscais (ícone "?").
 AJUDA_FISCAL = {
@@ -157,6 +160,11 @@ def _nome_loja():
     return nome if len(nome) <= 40 else nome[:39] + "…"
 
 
+def _logo_loja():
+    """Nome do arquivo da logo (Configurações); None se não houver."""
+    return banco.ler_config_fiscal().get("logo_arquivo") or None
+
+
 def _ler_reais(texto):
     """'R$ 1.234,56', '1234,56' ou '100' -> centavos. ValueError se inválido ou negativo.
 
@@ -188,18 +196,31 @@ class _Estilo:
         for agendado in self.tk.call("after", "info"):
             self.after_cancel(agendado)
         self.destroy()
+        # As imagens do Tk pertencem a esta janela e morrem com ela: a próxima (login <-> PDV)
+        # recriaria um ícone/logo em cache e o Tk acusaria 'image "pyimage1" doesn't exist'.
+        icone.cache_clear()
+        imagens.imagem.cache_clear()
+
+    @property
+    def _escala(self):
+        """Multiplicador do tamanho da letra (P/M/G do menu de perfil; o login usa 1)."""
+        return getattr(self, "_escala_fonte", 1.0)
+
+    def _alvo(self, altura, touch=ALTURA_TOUCH):
+        """Altura de um alvo de clique: no "modo touch" ela sobe para `touch` (padrão 48 px)."""
+        return max(altura, touch) if getattr(self, "touch", False) else altura
 
     def _fonte(self, tamanho=13, negrito=False):
         # Reaproveita a mesma fonte: criar um CTkFont por widget custa caro.
+        tamanho = round(tamanho * self._escala)
         chave = (tamanho, negrito)
         if chave not in self._fontes:
             self._fontes[chave] = ctk.CTkFont(family=FONTE, size=tamanho, weight="bold" if negrito else "normal")
         return self._fontes[chave]
 
-    @staticmethod
-    def _fonte_tk(tamanho, negrito=False):
+    def _fonte_tk(self, tamanho, negrito=False):
         """Fonte para widgets tk puros (mais leves que os CTk): tamanho em pixels."""
-        return (FONTE, -tamanho, "bold" if negrito else "normal")
+        return (FONTE, -round(tamanho * self._escala), "bold" if negrito else "normal")
 
     def _rotulo(self, parent, texto, tamanho=12, negrito=False, cor="text", **kw):
         return ctk.CTkLabel(parent, text=texto, font=self._fonte(tamanho, negrito),
@@ -209,7 +230,7 @@ class _Estilo:
         estilo = _ESTILOS_BOTAO[tipo]
         imagem = icone(icone_nome, 17, estilo["text_color"]) if icone_nome else None
         return ctk.CTkButton(
-            parent, text=text, command=command, width=width, height=height, corner_radius=12,
+            parent, text=text, command=command, width=width, height=self._alvo(height), corner_radius=12,
             font=self._fonte(12, True), image=imagem, compound=lado, **estilo,
         )
 
@@ -227,7 +248,9 @@ class _Estilo:
     def _entry(self, parent, placeholder="", senha=False, **kw):
         opcoes = dict(height=40, corner_radius=9, fg_color="#ffffff", border_width=1, border_color=P["line"],
                       text_color=P["text"], placeholder_text_color="#a0ada8", font=self._fonte(12))
-        return ctk.CTkEntry(parent, placeholder_text=placeholder, show="•" if senha else "", **{**opcoes, **kw})
+        opcoes.update(kw)
+        opcoes["height"] = self._alvo(opcoes["height"])
+        return ctk.CTkEntry(parent, placeholder_text=placeholder, show="•" if senha else "", **opcoes)
 
     def _titulo_campo(self, parent, rotulo, obrigatorio=False, ajuda=None):
         linha = ctk.CTkFrame(parent, fg_color="transparent")
@@ -278,9 +301,9 @@ class _Estilo:
     def _select(self, parent, valores, comando=None):
         """Lista de opções com borda (OptionMenu dentro de uma moldura). Devolve (moldura, menu)."""
         moldura = ctk.CTkFrame(parent, fg_color="#ffffff", corner_radius=9, border_width=1,
-                               border_color=P["line"], height=40)
+                               border_color=P["line"], height=self._alvo(40))
         menu = ctk.CTkOptionMenu(
-            moldura, values=valores, height=36, corner_radius=8, anchor="w",
+            moldura, values=valores, height=self._alvo(36, ALTURA_TOUCH - 4), corner_radius=8, anchor="w",
             fg_color="#ffffff", button_color="#ffffff", button_hover_color=P["primary_50"],
             text_color=P["text"], dropdown_fg_color="#ffffff", dropdown_hover_color=P["primary_50"],
             dropdown_text_color=P["text"], font=self._fonte(12), dropdown_font=self._fonte(12), command=comando,
@@ -296,6 +319,21 @@ class _Estilo:
         if valor in valores:
             quadro.entrada.set(valor)
         return quadro
+
+    def _selo_marca(self, parent, lado):
+        """Quadrado da marca: a logo da loja ou, sem logo, o carrinho do PDV."""
+        selo = ctk.CTkLabel(parent, text="", width=lado, height=lado)
+        self._pintar_selo(selo, lado)
+        return selo
+
+    def _pintar_selo(self, selo, lado):
+        # Logo sobre placa branca (desenhada na imagem): logo escura também aparece na barra verde.
+        logo = imagens.imagem(_logo_loja(), lado, lado, round(lado * 0.3), False, "#ffffff", round(lado / 8))
+        if logo:
+            selo.configure(image=logo, fg_color="transparent", corner_radius=0)
+        else:
+            selo.configure(image=icone("cart", round(lado / 2), P["primary_950"]), fg_color=P["accent"],
+                           corner_radius=round(lado * 0.3))
 
     def _pill(self, parent, texto, tom="sucesso"):
         cor, fundo, borda = TONS[tom]
@@ -397,6 +435,8 @@ class AppPDV(_Estilo, ctk.CTk):
         self._relogio_agendado = None
         self._toast = None
         self._menu = {}
+        self._menu_perfil = None
+        self._carregar_preferencias()
 
         self._estilizar_tabelas()
         self.grid_columnconfigure(1, weight=1)
@@ -409,6 +449,11 @@ class AppPDV(_Estilo, ctk.CTk):
         # Atalhos do caixa (como no protótipo): F2 busca, F4 finaliza.
         self.bind("<F2>", lambda e: self.tela == "vendas" and self.campo_venda_cod.focus())
         self.bind("<F4>", lambda e: self.tela == "vendas" and self.finalizar_venda())
+        self.bind("<F11>", lambda e: self._alternar_tela_cheia())
+        self.bind("<Escape>", lambda e: self._fechar_menu_perfil(), add="+")
+        self.bind("<Button-1>", self._clique_fora_do_menu, add="+")
+        if self.tela_cheia:
+            self.attributes("-fullscreen", True)
 
         self.mostrar_vendas()
 
@@ -422,7 +467,8 @@ class AppPDV(_Estilo, ctk.CTk):
         estilo.layout("PDV.Treeview", [("Treeview.treearea", {"sticky": "nswe"})])  # sem moldura
         estilo.configure(
             "PDV.Treeview", background=P["surface"], fieldbackground=P["surface"],
-            foreground=P["text_soft"], rowheight=40, borderwidth=0, font=self._fonte_tk(12),
+            foreground=P["text_soft"], rowheight=self._alvo(round(40 * self._escala), 50), borderwidth=0,
+            font=self._fonte_tk(12),
         )
         estilo.configure(
             "PDV.Treeview.Heading", background=P["table_head"], foreground=P["muted"],
@@ -585,6 +631,78 @@ class AppPDV(_Estilo, ctk.CTk):
             self._kpi(grade, *kpi).grid(row=0, column=i, sticky="ew", padx=(0 if i == 0 else 6, 0 if i == len(kpis) - 1 else 6))
         return grade
 
+    def _seletor_imagem(self, parent, atual, titulo, texto, lado, quadrada, icone_vazio):
+        """Prévia + "Escolher imagem…" + "Remover", sem gravar nada ainda.
+
+        O estado fica em `quadro.estado` ({atual, nova, remover}); quem salva o formulário
+        chama `_gravar_imagem_escolhida` e, depois de gravar no banco, `_descartar_imagem_antiga`.
+        """
+        quadro = ctk.CTkFrame(parent, fg_color="transparent")
+        estado = {"atual": atual, "nova": None, "remover": False}
+        quadro.estado = estado
+        quadro.pintar = lambda: pintar()
+        previa = ctk.CTkLabel(quadro, text="", width=88, height=88, bg_color=P["surface"])
+        previa.pack(side="left")
+        textos = ctk.CTkFrame(quadro, fg_color="transparent")
+        textos.pack(side="left", padx=(16, 0), fill="x", expand=True)
+        self._rotulo(textos, titulo, 12, True).pack(anchor="w")
+        self._rotulo(textos, texto, 10, cor="muted", justify="left", wraplength=460).pack(anchor="w", pady=(2, 8))
+        botoes = ctk.CTkFrame(textos, fg_color="transparent")
+        botoes.pack(anchor="w")
+        # Logo: encaixada inteira numa placa clara; foto: cortada em quadrado. Cantos já na imagem
+        # (corner_radius no CTkLabel alargaria a prévia e empurraria o texto ao lado).
+        forma = (88, 88, 14) + ((True,) if quadrada else (False, P["canvas"], 8))
+
+        def pintar():
+            if estado["nova"] is not None:
+                img = imagens.para_tela(estado["nova"], *forma)
+            else:
+                img = None if estado["remover"] else imagens.imagem(estado["atual"], *forma)
+            if img:
+                previa.configure(image=img, fg_color="transparent", corner_radius=0)
+            else:
+                previa.configure(image=icone(icone_vazio, 30, P["line_hover"]), fg_color=P["canvas"], corner_radius=14)
+            escolher_btn.configure(text="Trocar imagem…" if img else "Escolher imagem…")
+            if img:
+                remover_btn.pack(side="left", padx=(8, 0))
+            else:
+                remover_btn.pack_forget()
+
+        def escolher():
+            origem = filedialog.askopenfilename(title=titulo, filetypes=imagens.TIPOS)
+            if not origem:
+                return
+            try:
+                estado["nova"] = imagens.preparar(origem, lado, quadrada)
+            except imagens.ImagemInvalida as erro:
+                self._avisar(str(erro), erro=True)
+                return
+            estado["remover"] = False
+            pintar()
+
+        def remover():
+            estado.update(nova=None, remover=True)
+            pintar()
+
+        escolher_btn = self._btn(botoes, "Escolher imagem…", escolher, "secundario", 160, 36)
+        escolher_btn.pack(side="left")
+        remover_btn = self._btn(botoes, "Remover", remover, "secundario", 100, 36, "trash")
+        pintar()
+        return quadro
+
+    @staticmethod
+    def _gravar_imagem_escolhida(estado, prefixo):
+        """Grava a imagem nova do seletor (se houver). Devolve o nome que vai para o banco."""
+        if estado["nova"] is not None:
+            return imagens.gravar(estado["nova"], prefixo)
+        return None if estado["remover"] else estado["atual"]
+
+    @staticmethod
+    def _descartar_imagem_antiga(estado, gravada):
+        """Depois de salvar: apaga a cópia anterior se ela foi trocada ou removida."""
+        if gravada != estado["atual"]:
+            imagens.remover(estado["atual"])
+
     def _avisar(self, texto, erro=False):
         """Toast na base da janela (some sozinho): confirmações e erros que não exigem resposta."""
         if self._toast is not None:
@@ -609,14 +727,14 @@ class AppPDV(_Estilo, ctk.CTk):
 
     # ---------- Barra lateral ----------
     def _montar_barra_lateral(self):
-        barra = ctk.CTkFrame(self, width=222, corner_radius=0, fg_color=P["primary_950"])
+        barra = self.barra = ctk.CTkFrame(self, width=222, corner_radius=0, fg_color=P["primary_950"])
         barra.grid(row=0, column=0, sticky="nsew")
         barra.pack_propagate(False)
 
         marca = ctk.CTkFrame(barra, fg_color="transparent")
         marca.pack(fill="x", padx=20, pady=(24, 22))
-        ctk.CTkLabel(marca, text="", image=icone("cart", 21, P["primary_950"]), width=42, height=42,
-                     corner_radius=13, fg_color=P["accent"]).pack(side="left")
+        self.selo_marca = self._selo_marca(marca, 42)
+        self.selo_marca.pack(side="left")
         textos = ctk.CTkFrame(marca, fg_color="transparent")
         textos.pack(side="left", padx=(12, 0))
         self.lbl_marca = self._rotulo(textos, "", 15, True, "#ffffff", justify="left", wraplength=130)
@@ -648,39 +766,199 @@ class AppPDV(_Estilo, ctk.CTk):
         rodape.pack(side="bottom", fill="x")
         ctk.CTkFrame(rodape, height=1, fg_color=P["nav_line"], corner_radius=0).pack(fill="x")
         self.btn_sync = ctk.CTkButton(
-            rodape, text="Sincronizar dados", command=self.sincronizar_agora, height=38, corner_radius=10,
+            rodape, text="Sincronizar dados", command=self.sincronizar_agora, height=self._alvo(38), corner_radius=10,
             image=icone("sync", 16, P["primary_950"]), font=self._fonte(12, True), **_ESTILOS_BOTAO["accent"],
         )
         self.btn_sync.pack(fill="x", padx=12, pady=(14, 12))
 
-        operador = ctk.CTkFrame(rodape, fg_color="transparent")
-        operador.pack(fill="x", padx=14, pady=(0, 16))
+        # Operador: clicar no nome (ou no avatar) abre o menu de perfil.
+        linha = ctk.CTkFrame(rodape, fg_color="transparent")
+        linha.pack(fill="x", padx=8, pady=(0, 12))
+        operador = self.operador = ctk.CTkFrame(linha, fg_color="transparent", corner_radius=10, cursor="hand2")
+        operador.pack(side="left", fill="x", expand=True)
         nome = self.usuario.get("nome") or self.usuario["login"]
-        ctk.CTkLabel(operador, text=_iniciais_nome(nome), width=32, height=32, corner_radius=16,
-                     fg_color=P["avatar"], text_color=P["primary_900"], font=self._fonte(10, True)).pack(side="left")
+        avatar = ctk.CTkLabel(operador, text=_iniciais_nome(nome), width=32, height=32, corner_radius=16,
+                              fg_color=P["avatar"], text_color=P["primary_900"], font=self._fonte(10, True))
+        avatar.pack(side="left", padx=(6, 0), pady=6)
         textos = ctk.CTkFrame(operador, fg_color="transparent")
-        textos.pack(side="left", padx=(10, 0), fill="x", expand=True)
-        self._rotulo(textos, nome, 12, True, "#ffffff", anchor="w").pack(anchor="w")
-        linha = ctk.CTkFrame(textos, fg_color="transparent")
-        linha.pack(anchor="w")
-        self._rotulo(linha, "Master" if self.eh_master else "Operador", 10, cor="brand_sub").pack(side="left")
-        self._rotulo(linha, "  ·  ", 10, cor="brand_sub").pack(side="left")
-        trocar = self._rotulo(linha, "Trocar senha", 10, True, "accent", cursor="hand2")
-        trocar.pack(side="left")
-        trocar.bind("<Button-1>", lambda e: self._trocar_minha_senha())
-        ctk.CTkButton(operador, text="", image=icone("logout", 17, P["nav_text"]), width=30, height=30,
-                      corner_radius=8, fg_color="transparent", hover_color=P["nav_hover"],
-                      command=self._sair).pack(side="right")
+        textos.pack(side="left", padx=(10, 0))
+        lbl_nome = self._rotulo(textos, nome, 12, True, "#ffffff", anchor="w")
+        lbl_nome.pack(anchor="w")
+        lbl_papel = self._rotulo(textos, f"{'Master' if self.eh_master else 'Operador'} · Perfil", 10,
+                                 cor="brand_sub", anchor="w")
+        lbl_papel.pack(anchor="w")
+        seta = ctk.CTkLabel(operador, text="", image=icone("chevron", 14, P["nav_text"]), width=16)
+        seta.pack(side="right", padx=(0, 6))
+        for w in (operador, avatar, textos, lbl_nome, lbl_papel, seta):
+            w.bind("<Button-1>", lambda e: self._alternar_menu_perfil())
+            w.bind("<Enter>", lambda e: operador.configure(fg_color=P["nav_hover"]))
+            w.bind("<Leave>", lambda e: self._sair_do_operador())
+        ctk.CTkButton(linha, text="", image=icone("logout", 17, P["nav_text"]), width=self._alvo(30, 44),
+                      height=self._alvo(30, 44), corner_radius=8, fg_color="transparent", hover_color=P["nav_hover"],
+                      command=self._sair).pack(side="right", padx=(4, 0))
+
+    def _sair_do_operador(self):
+        # Como em _hover_menu: passar do avatar para o nome também gera <Leave>.
+        sob = self.winfo_containing(*self.winfo_pointerxy())
+        if self._menu_perfil is None and not (sob is not None and str(sob).startswith(str(self.operador))):
+            self.operador.configure(fg_color="transparent")
+
+    # ---------- Menu de perfil (senha, letra, modo touch, tela cheia, sair) ----------
+    def _chave_preferencia(self, nome):
+        return f"usuario:{self.usuario['id']}:{nome}"
+
+    def _carregar_preferencias(self):
+        """Preferências da tela, salvas por usuário (banco.preferencias)."""
+        ler = lambda nome, padrao: banco.ler_preferencia(self._chave_preferencia(nome), padrao)
+        self.tamanho_letra = ler("fonte", "M") if ler("fonte", "M") in ESCALAS_FONTE else "M"
+        self._escala_fonte = ESCALAS_FONTE[self.tamanho_letra]
+        self.touch = ler("touch", "0") == "1"
+        self.tela_cheia = ler("tela_cheia", "0") == "1"
+
+    def _alternar_menu_perfil(self):
+        if self._menu_perfil is not None:
+            self._fechar_menu_perfil()
+            return
+        menu = self._menu_perfil = ctk.CTkFrame(self, fg_color=P["surface"], corner_radius=14,
+                                                border_width=1, border_color=P["line"])
+        nome = self.usuario.get("nome") or self.usuario["login"]
+        cab = ctk.CTkFrame(menu, fg_color=P["surface"])
+        cab.pack(fill="x", padx=16, pady=(14, 10))
+        ctk.CTkLabel(cab, text=_iniciais_nome(nome), width=38, height=38, corner_radius=19, fg_color=P["avatar"],
+                     text_color=P["primary_900"], font=self._fonte(11, True)).pack(side="left")
+        textos = ctk.CTkFrame(cab, fg_color=P["surface"])
+        textos.pack(side="left", padx=(10, 0))
+        self._rotulo(textos, nome, 13, True).pack(anchor="w")
+        self._rotulo(textos, f"{'Master' if self.eh_master else 'Operador'} · {self.usuario['login']}", 10,
+                     cor="muted").pack(anchor="w")
+
+        def separador():
+            ctk.CTkFrame(menu, height=1, fg_color=P["line_soft"], corner_radius=0).pack(fill="x", padx=1, pady=4)
+
+        def opcao(texto, nome_icone, comando, cor="text"):
+            item = ctk.CTkFrame(menu, fg_color=P["surface"], corner_radius=9, height=self._alvo(40), cursor="hand2")
+            item.pack(fill="x", padx=8, pady=1)
+            item.pack_propagate(False)
+            simbolo = ctk.CTkLabel(item, text="", image=icone(nome_icone, 17, P.get(cor, cor)), width=20)
+            simbolo.pack(side="left", padx=(10, 10))
+            rotulo = self._rotulo(item, texto, 12, True, cor)
+            rotulo.pack(side="left")
+            for w in (item, simbolo, rotulo):
+                w.bind("<Button-1>", lambda e: (self._fechar_menu_perfil(), comando()))
+                w.bind("<Enter>", lambda e: item.configure(fg_color=P["primary_50"]))
+                w.bind("<Leave>", lambda e: item.configure(fg_color=P["surface"]))
+
+        def ajuste(titulo, detalhe, controle):
+            linha = ctk.CTkFrame(menu, fg_color=P["surface"])
+            linha.pack(fill="x", padx=18, pady=6)
+            textos = ctk.CTkFrame(linha, fg_color=P["surface"])
+            textos.pack(side="left")
+            self._rotulo(textos, titulo, 12, True).pack(anchor="w")
+            self._rotulo(textos, detalhe, 10, cor="muted").pack(anchor="w")
+            controle(linha).pack(side="right", padx=(16, 0))
+
+        separador()
+        opcao("Trocar senha", "lock", self._trocar_minha_senha)
+        separador()
+        ajuste("Tamanho da letra", "Pequena, média ou grande", self._seletor_letra)
+        ajuste("Modo touch", "Botões e alvos maiores", lambda pai: self._interruptor(pai, self.touch, self._alternar_touch))
+        ajuste("Tela cheia", "Também pela tecla F11",
+               lambda pai: self._interruptor(pai, self.tela_cheia, self._alternar_tela_cheia))
+        separador()
+        opcao("Sair", "logout", self._sair, "danger")
+        ctk.CTkFrame(menu, height=6, fg_color=P["surface"]).pack()
+
+        self.update_idletasks()
+        # Abre para cima, logo acima do operador; fica por cima da barra e da tela.
+        altura_rodape = self.winfo_height() - self.operador.winfo_rooty() + self.winfo_rooty()
+        menu.place(x=12, rely=1, y=-(altura_rodape + 6), anchor="sw")
+        menu.lift()
+        self.operador.configure(fg_color=P["nav_hover"])
+
+    def _seletor_letra(self, parent):
+        seletor = ctk.CTkSegmentedButton(
+            parent, values=list(ESCALAS_FONTE), command=self._mudar_letra, width=110, height=self._alvo(30, 40),
+            font=self._fonte(11, True), fg_color=P["canvas"], selected_color=P["accent"],
+            selected_hover_color=P["accent_hover"], unselected_color=P["canvas"], unselected_hover_color=P["line_soft"],
+            text_color=P["primary_950"], corner_radius=8)
+        seletor.set(self.tamanho_letra)
+        return seletor
+
+    def _interruptor(self, parent, ligado, comando):
+        chave = ctk.CTkSwitch(parent, text="", width=46, switch_width=40, switch_height=22, command=comando,
+                              progress_color=P["accent"], button_color=P["primary_900"],
+                              button_hover_color=P["primary_950"], fg_color=P["line"])
+        (chave.select if ligado else chave.deselect)()
+        return chave
+
+    def _fechar_menu_perfil(self):
+        if self._menu_perfil is not None:
+            self._menu_perfil.destroy()
+            self._menu_perfil = None
+            if self.operador.winfo_exists():
+                self.operador.configure(fg_color="transparent")
+
+    def _clique_fora_do_menu(self, evento):
+        """Clique em qualquer lugar fora do menu (e fora do operador, que alterna) fecha o menu."""
+        if self._menu_perfil is None:
+            return
+        alvo = str(evento.widget)
+        if not (alvo.startswith(str(self._menu_perfil)) or alvo.startswith(str(self.operador))):
+            self._fechar_menu_perfil()
+
+    def _mudar_letra(self, tamanho):
+        if tamanho == self.tamanho_letra:
+            return
+        banco.salvar_preferencia(self._chave_preferencia("fonte"), tamanho)
+        self.tamanho_letra, self._escala_fonte = tamanho, ESCALAS_FONTE[tamanho]
+        self.after(1, self._reaplicar_visual)  # fora do clique: o seletor é destruído ao refazer o menu
+
+    def _alternar_touch(self):
+        self.touch = not self.touch
+        banco.salvar_preferencia(self._chave_preferencia("touch"), "1" if self.touch else "0")
+        self.after(1, self._reaplicar_visual)
+
+    def _alternar_tela_cheia(self):
+        self.tela_cheia = not self.tela_cheia
+        banco.salvar_preferencia(self._chave_preferencia("tela_cheia"), "1" if self.tela_cheia else "0")
+        self.attributes("-fullscreen", self.tela_cheia)
+        if self._menu_perfil is not None:  # F11 com o menu aberto: redesenha o interruptor
+            self.after(1, lambda: (self._fechar_menu_perfil(), self._alternar_menu_perfil()))
+
+    def _reaplicar_visual(self):
+        """Letra/modo touch mudaram: refaz a barra lateral e a tela atual, mantendo o carrinho.
+
+        Um formulário de produto aberto é recarregado do banco (o que não foi salvo se perde).
+        """
+        self._fechar_menu_perfil()
+        self._estilizar_tabelas()
+        self.barra.destroy()
+        self._menu = {}
+        self._montar_barra_lateral()
+        tela, carrinho, desconto = self.tela, self.carrinho, self.desconto
+        form_aberto = tela == "produtos" and getattr(self, "pf", None) and self.pf["descricao"].winfo_exists()
+        if tela == "vendas":
+            self.mostrar_vendas()
+            self.carrinho, self.desconto = carrinho, desconto
+            self._redesenhar_carrinho()
+        elif form_aberto:
+            self.mostrar_form_produto(self.produto_sel_id)
+        else:
+            {"produtos": self.mostrar_produtos, "caixa": self.mostrar_caixa, "historico": self.mostrar_historico,
+             "relatorio": self.mostrar_relatorio, "config": self.mostrar_config,
+             "usuarios": self.mostrar_usuarios}[tela]()
+        self._alternar_menu_perfil()  # reabre o menu: o operador vê o efeito e pode ajustar de novo
 
     def _atualizar_marca(self):
-        """Mostra o nome fantasia da loja (Configurações) no lugar do nome genérico."""
+        """Mostra a logo e o nome fantasia da loja (Configurações) no lugar da marca genérica."""
+        self._pintar_selo(self.selo_marca, 42)
         loja = _nome_loja()
         self.lbl_marca.configure(text=loja or "PDV Próprio")
         self.lbl_marca_sub.configure(text="PDV Próprio" if loja else "Ponto de venda")
         self.title(f"{loja} — PDV Próprio" if loja else "PDV Próprio")
 
     def _item_menu(self, parent, chave, texto, nome_icone, comando):
-        item = ctk.CTkFrame(parent, height=42, corner_radius=10, fg_color="transparent", cursor="hand2")
+        item = ctk.CTkFrame(parent, height=self._alvo(42), corner_radius=10, fg_color="transparent", cursor="hand2")
         item.pack(fill="x", pady=1)
         item.pack_propagate(False)
         faixa = ctk.CTkFrame(item, width=3, height=22, corner_radius=2, fg_color="transparent")
@@ -871,7 +1149,7 @@ class AppPDV(_Estilo, ctk.CTk):
         self.abas_categoria.pack(side="left")
         self.botoes_categoria = {}
         for nome in ["Todos", *banco.listar_categorias()][:9]:
-            b = ctk.CTkButton(self.abas_categoria, text=nome, width=10, height=32, corner_radius=9,
+            b = ctk.CTkButton(self.abas_categoria, text=nome, width=10, height=self._alvo(32, 44), corner_radius=9,
                               font=self._fonte(11, True), command=lambda n=nome: self._selecionar_categoria(n))
             b.pack(side="left", padx=(0, 5))
             self.botoes_categoria[nome] = b
@@ -895,7 +1173,7 @@ class AppPDV(_Estilo, ctk.CTk):
 
     def _ajustar_colunas(self, evento):
         minimo, maximo = COLUNAS_CATALOGO
-        colunas = max(minimo, min(maximo, evento.width // LARGURA_CARTAO))
+        colunas = max(minimo, min(maximo, evento.width // round(LARGURA_CARTAO * self._escala)))
         if colunas != self._colunas_catalogo:
             self._colunas_catalogo = colunas
             self._configurar_colunas()
@@ -962,7 +1240,8 @@ class AppPDV(_Estilo, ctk.CTk):
             )
             return
         for idx, p in enumerate(prods[:LIMITE_CARTOES]):
-            self._cartao_produto(p).grid(row=idx // colunas, column=idx % colunas, padx=5, pady=5, sticky="nsew")
+            self._cartao_produto(p).grid(row=idx // colunas, column=idx % colunas,
+                                         padx=8 if self.touch else 5, pady=8 if self.touch else 5, sticky="nsew")
         if len(prods) > LIMITE_CARTOES:
             self._rotulo(
                 self.grade, f"+{len(prods) - LIMITE_CARTOES} produto(s) — refine a busca.", 11, cor="muted"
@@ -986,13 +1265,21 @@ class AppPDV(_Estilo, ctk.CTk):
         self._desenhar_catalogo()
         self.campo_venda_cod.focus()
 
+    def _visual_produto(self, parent, produto_id, descricao, foto, lado, tamanho_fonte, fundo=P["surface"]):
+        """Foto do produto (cache em imagens.imagem) ou, sem foto/arquivo ilegível, as iniciais coloridas."""
+        imagem = imagens.imagem(foto, lado, lado, round(lado / 5))
+        if imagem:
+            return ctk.CTkLabel(parent, text="", image=imagem, width=lado, height=lado, fg_color=fundo)
+        return ctk.CTkLabel(parent, text=_iniciais(descricao), width=lado, height=lado, corner_radius=round(lado / 5),
+                            fg_color=CORES_PRODUTO[produto_id % len(CORES_PRODUTO)],
+                            text_color=P["primary_900"], font=self._fonte(tamanho_fonte, True))
+
     def _cartao_produto(self, p):
         card = ctk.CTkFrame(self.grade, fg_color=P["surface"], corner_radius=13, border_width=1,
-                            border_color=P["line"], height=104, cursor="hand2")
+                            border_color=P["line"], height=round(104 * self._escala) + (12 if self.touch else 0),
+                            cursor="hand2")
         card.pack_propagate(False)
-        visual = ctk.CTkLabel(card, text=_iniciais(p["descricao"]), width=46, height=58, corner_radius=10,
-                              fg_color=CORES_PRODUTO[p["id"] % len(CORES_PRODUTO)],
-                              text_color=P["primary_900"], font=self._fonte(11, True))
+        visual = self._visual_produto(card, p["id"], p["descricao"], p.get("foto_arquivo"), 48, 11)
         visual.pack(side="left", padx=(13, 11), pady=13)
         # Textos em tk.Label (leve): o catálogo pode ter dezenas de cartões.
         info = tk.Frame(card, bg=P["surface"])
@@ -1000,6 +1287,8 @@ class AppPDV(_Estilo, ctk.CTk):
         nome = tk.Label(info, text=p["descricao"], bg=P["surface"], fg=P["text"], font=self._fonte_tk(12, True),
                         anchor="w", justify="left", wraplength=135)
         nome.pack(anchor="w", fill="x")
+        # Quebra o nome na largura real do cartão (muda com as colunas e com a letra P/M/G).
+        info.bind("<Configure>", lambda e: nome.configure(wraplength=max(60, e.width - 2)))
         categoria = tk.Label(info, text=p.get("categoria") or "Sem categoria", bg=P["surface"], fg=P["muted"],
                              font=self._fonte_tk(10), anchor="w")
         categoria.pack(anchor="w", pady=(1, 4))
@@ -1083,6 +1372,7 @@ class AppPDV(_Estilo, ctk.CTk):
                 "quantidade": 1,
                 "preco_unit_centavos": produto["preco_centavos"],
                 "aliquota_aprox": produto.get("aliquota_aprox") or 0,
+                "foto_arquivo": produto.get("foto_arquivo"),
             })
         self._redesenhar_carrinho()
 
@@ -1190,14 +1480,14 @@ class AppPDV(_Estilo, ctk.CTk):
                              border_width=1, border_color=P["line_soft"])
         linha.grid(row=idx, column=0, sticky="ew", pady=4, padx=2)
         linha.grid_columnconfigure(1, weight=1)
-        ctk.CTkLabel(linha, text=_iniciais(item["descricao"]), width=40, height=46, corner_radius=9,
-                     fg_color=CORES_PRODUTO[item["produto_id"] % len(CORES_PRODUTO)],
-                     text_color=P["primary_900"], font=self._fonte(10, True)).grid(row=0, column=0, rowspan=3, padx=(10, 10), pady=10, sticky="n")
+        self._visual_produto(linha, item["produto_id"], item["descricao"], item.get("foto_arquivo"), 44, 10,
+                             fundo="#ffffff").grid(row=0, column=0, rowspan=3, padx=(10, 10), pady=10, sticky="n")
         tk.Label(linha, text=item["descricao"], bg="#ffffff", fg=P["text"], font=self._fonte_tk(12, True),
                  anchor="w", justify="left", wraplength=200).grid(row=0, column=1, sticky="w", pady=(10, 0))
         tk.Label(linha, text=f"{_reais(item['preco_unit_centavos'])} / {item['unidade'].lower()}", bg="#ffffff", fg=P["muted"],
                  font=self._fonte_tk(10), anchor="w").grid(row=1, column=1, sticky="w")
-        ctk.CTkButton(linha, text="", image=icone("trash", 15, P["muted"]), width=26, height=26, corner_radius=7,
+        lixeira = 40 if self.touch else 26
+        ctk.CTkButton(linha, text="", image=icone("trash", 15, P["muted"]), width=lixeira, height=lixeira, corner_radius=7,
                       fg_color="transparent", hover_color=P["danger_soft"],
                       command=lambda: self.remover_item(item)).grid(row=0, column=2, padx=(0, 6), pady=(6, 0), sticky="ne")
 
@@ -1206,13 +1496,15 @@ class AppPDV(_Estilo, ctk.CTk):
         stepper = ctk.CTkFrame(base, fg_color=P["primary_50"], corner_radius=7, border_width=1, border_color=P["line"])
         stepper.pack(side="left")
         passo = self._passo(item)
+        # Modo touch: −/+ viram alvos quase quadrados de 44×40, com folga entre eles.
+        lado, alto, folga = (44, 40, 3) if self.touch else (26, 24, 1)
         for texto_icone, delta in (("minus", -passo), (None, 0), ("plus", passo)):
             if texto_icone:
-                ctk.CTkButton(stepper, text="", image=icone(texto_icone, 14, P["primary_700"]), width=26, height=24,
-                              corner_radius=6, fg_color="transparent", hover_color=P["accent_soft"],
-                              command=lambda d=delta: self._alterar_qtd(item, d)).pack(side="left", padx=1, pady=1)
+                ctk.CTkButton(stepper, text="", image=icone(texto_icone, 16 if self.touch else 14, P["primary_700"]),
+                              width=lado, height=alto, corner_radius=6, fg_color="transparent", hover_color=P["accent_soft"],
+                              command=lambda d=delta: self._alterar_qtd(item, d)).pack(side="left", padx=folga, pady=1)
             else:
-                ctk.CTkButton(stepper, text=_qtd(item["quantidade"]), width=34, height=24, corner_radius=0,
+                ctk.CTkButton(stepper, text=_qtd(item["quantidade"]), width=lado + 8, height=alto, corner_radius=0,
                               fg_color="#ffffff", hover_color=P["accent_soft"], text_color=P["text"],
                               font=self._fonte(11, True), command=lambda: self._digitar_qtd(item)).pack(side="left", pady=1)
         self._rotulo(base, _reais(sub), 12, True, "primary_800").pack(side="right")
@@ -1305,7 +1597,7 @@ class AppPDV(_Estilo, ctk.CTk):
         sessao = banco.sessao_aberta()
         try:
             venda_id, total_gravado = banco.registrar_venda(
-                self.carrinho, pagamento["pagamentos"], sessao and sessao["id"], self.desconto,
+                self.carrinho, pagamento["pagamentos"], sessao and sessao["id"], self.desconto, pagamento["troco"],
             )
         except Exception as erro:
             messagebox.showerror("Erro", f"Não foi possível registrar a venda.\n{erro}")
@@ -1370,7 +1662,7 @@ class AppPDV(_Estilo, ctk.CTk):
         rotulos_notas = [("Valor exato", None)] + [(_reais(n).replace(",00", ""), n) for n in NOTAS]
         for i, (texto, valor) in enumerate(rotulos_notas):
             notas.grid_columnconfigure(i, weight=1)
-            ctk.CTkButton(notas, text=texto, height=38, corner_radius=9, font=self._fonte(11, True),
+            ctk.CTkButton(notas, text=texto, height=self._alvo(38), corner_radius=9, font=self._fonte(11, True),
                           fg_color=P["primary_50"], hover_color=P["primary_100"], text_color=P["primary_800"],
                           border_width=1, border_color=P["line"],
                           command=lambda v=valor: definir_recebido(v)).grid(
@@ -1673,6 +1965,13 @@ class AppPDV(_Estilo, ctk.CTk):
         textos.pack(side="left", pady=8)
         self._rotulo(textos, "Controlar estoque", 12, True).pack(anchor="w")
         self._rotulo(textos, "Movimentar o saldo automaticamente a cada venda.", 10, cor="muted").pack(anchor="w")
+        self.pf_foto = self._seletor_imagem(
+            corpo, None, "Foto do produto",
+            "Aparece no catálogo da venda e no carrinho. A imagem é cortada em quadrado pelo centro. "
+            "Sem foto, o produto aparece com as iniciais coloridas.",
+            imagens.LADO_FOTO, quadrada=True, icone_vazio="package",
+        )
+        self.pf_foto.grid(row=3, column=0, columnspan=4, sticky="ew", pady=(14, 0))
 
         card, corpo = self._secao(pagina, "Dados fiscais", "Campos necessários para NFC-e e escrituração fiscal.",
                                   ("NFC-e / SPED", "neutro"))
@@ -1742,14 +2041,23 @@ class AppPDV(_Estilo, ctk.CTk):
         dados = self._ler_form_produto()
         if dados is None:
             return
+        foto = self.pf_foto.estado
+        try:
+            dados["foto_arquivo"] = self._gravar_imagem_escolhida(foto, "produto")
+        except OSError as erro:
+            messagebox.showerror("Erro", f"Não foi possível guardar a foto.\n{erro}")
+            return
         try:
             if self.produto_sel_id is None:
                 banco.cadastrar_produto(dados)
             else:
                 banco.atualizar_produto(self.produto_sel_id, dados)
         except banco.CodigoDuplicado:
+            if dados["foto_arquivo"] != foto["atual"]:
+                imagens.remover(dados["foto_arquivo"])  # a cópia nova não chegou ao banco
             self._marcar_erro("codigo", "Código repetido", f"Já existe um produto com o código {dados['codigo']}.")
             return
+        self._descartar_imagem_antiga(foto, dados["foto_arquivo"])
         self.mostrar_produtos()
         self._avisar("Produto salvo com sucesso")
 
@@ -1775,6 +2083,8 @@ class AppPDV(_Estilo, ctk.CTk):
             campo.delete(0, tk.END)
             campo.insert(0, valores[chave])
         (self.pf_controla.select if produto.get("controla_estoque") else self.pf_controla.deselect)()
+        self.pf_foto.estado["atual"] = produto.get("foto_arquivo") or None
+        self.pf_foto.pintar()
 
     # ==================================================================
     # Tela de Caixa
@@ -1972,23 +2282,33 @@ class AppPDV(_Estilo, ctk.CTk):
         self._rotulo(rapidos, "Período rápido:", 11, True, "text_soft").pack(side="left", padx=(0, 8))
         self.h_rapidos = {}
         for nome in self.PERIODOS_RAPIDOS:
-            b = ctk.CTkButton(rapidos, text=nome, width=10, height=32, corner_radius=9, font=self._fonte(11, True),
+            b = ctk.CTkButton(rapidos, text=nome, width=10, height=self._alvo(32, 44), corner_radius=9,
+                              font=self._fonte(11, True),
                               command=lambda n=nome: self._periodo_rapido(n))
             b.pack(side="left", padx=(0, 6))
             self.h_rapidos[nome] = b
 
-        dados = self._cartao_dados(pagina, "Vendas encontradas",
-                                   direita=lambda p: self._rotulo(p, "", 20, True, "primary_900"))
+        def direita(parent):
+            quadro = ctk.CTkFrame(parent, fg_color="transparent")
+            self._btn(quadro, "Ver itens", self._ver_itens_venda, "secundario", 120, 36, "receipt").pack(side="left", padx=(0, 16))
+            quadro.total = self._rotulo(quadro, "", 20, True, "primary_900")
+            quadro.total.pack(side="left")
+            return quadro
+
+        dados = self._cartao_dados(pagina, "Vendas encontradas", direita=direita)
         dados.grid(row=2, column=0, sticky="nsew")
         dados.grid_rowconfigure(2, weight=1)
-        self.h_cartao, self.h_total = dados, dados.direita
+        self.h_cartao, self.h_total = dados, dados.direita.total
         moldura, self.h_tabela = self._tabela(dados, [
             ("id", "Venda", 90, "w"), ("data", "Data e hora", 180, "w"),
             ("itens", "Itens", 90, "w"), ("formas", "Pagamento", 200, "w"),
             ("desconto", "Desconto", 110, "w"), ("total", "Total", 120, "w"),
         ])
         moldura.grid(row=2, column=0, sticky="nsew", padx=1)
-        self.h_contagem = self._rodape_tabela(dados, "Vendas concluídas no período, mais recentes primeiro.")
+        for evento in ("<Double-1>", "<Return>", "<KP_Enter>"):
+            self.h_tabela.bind(evento, lambda e: self._ver_itens_venda())
+        self.h_contagem = self._rodape_tabela(dados, "Vendas concluídas no período, mais recentes primeiro. "
+                                                     "Duplo clique abre os itens.")
         self._filtrar_historico()
 
     # nome: (dias atrás do fim, quantidade de dias)
@@ -2033,6 +2353,118 @@ class AppPDV(_Estilo, ctk.CTk):
         self.h_cartao.subtitulo.configure(text=f"{n} registro(s) no período selecionado")
         self.h_total.configure(text=_reais(sum(v["total_centavos"] for v in vendas)))
         self.h_contagem.configure(text=f"1–{n} de {n}" if n else "0 de 0")
+
+    def _ver_itens_venda(self):
+        """Abre o recibo da venda selecionada no Histórico."""
+        selecao = self.h_tabela.selection()
+        numero = self.h_tabela.item(selecao[0], "values")[0] if selecao else ""
+        if not numero.startswith("#"):
+            self._avisar("Selecione uma venda na lista", erro=True)
+            return
+        venda = banco.detalhes_venda(int(numero[1:]))
+        if venda:
+            self._janela_recibo(venda)
+
+    def _janela_recibo(self, venda):
+        """Modal "recibo": itens, totais, formas de pagamento e troco de uma venda gravada."""
+        janela = ctk.CTkToplevel(self)
+        janela.title(f"Venda #{venda['id']}")
+        janela.resizable(False, False)
+        janela.transient(self)
+        janela.configure(fg_color=P["canvas"])
+        largura = 470
+
+        recibo = self._card(janela)
+        recibo.pack(fill="x", padx=22, pady=(22, 12))
+        cab = ctk.CTkFrame(recibo, fg_color=P["surface"])
+        cab.pack(fill="x", padx=22, pady=(20, 14))
+        cab.grid_columnconfigure(0, weight=1)
+        self._rotulo(cab, f"Venda #{venda['id']}", 20, True, "primary_950").grid(row=0, column=0, sticky="w")
+        concluida = venda["status"] == "concluida"
+        self._pill(cab, "Concluída" if concluida else venda["status"].capitalize(),
+                   "sucesso" if concluida else "perigo").grid(row=0, column=1, sticky="e")
+        qtd = len(venda["itens"])
+        self._rotulo(cab, f"{_data_hora(venda['criado_em'])} · {qtd} {'item' if qtd == 1 else 'itens'}",
+                     11, cor="muted").grid(row=1, column=0, columnspan=2, sticky="w")
+
+        def separador():
+            # Picote do cupom: traços em vez de linha contínua.
+            tk.Label(recibo, text="- " * 60, bg=P["surface"], fg=P["line_hover"], font=self._fonte_tk(9),
+                     anchor="w", width=1).pack(fill="x", padx=22)
+
+        separador()
+        # Itens em tk.Label (leve) dentro de um quadro rolável quando a venda é grande.
+        lista = (ctk.CTkScrollableFrame(recibo, fg_color=P["surface"], height=300,
+                                        scrollbar_button_color=P["line"], scrollbar_button_hover_color=P["line_hover"])
+                 if qtd > 6 else ctk.CTkFrame(recibo, fg_color=P["surface"]))
+        lista.pack(fill="x", padx=(22, 14 if qtd > 6 else 22), pady=10)
+        lista.grid_columnconfigure(0, weight=1)
+        for i, item in enumerate(venda["itens"]):
+            tk.Label(lista, text=item["descricao"], bg=P["surface"], fg=P["text"], font=self._fonte_tk(13, True),
+                     anchor="w", justify="left", wraplength=280).grid(row=2 * i, column=0, sticky="w", pady=(8 if i else 0, 0))
+            unidade = (item["unidade"] or "UN").lower()
+            detalhe = f"{_qtd(item['quantidade'])} {unidade} × {_reais(item['preco_unit_centavos'])}"
+            if item["codigo"]:
+                detalhe += f"  ·  {item['codigo']}"
+            tk.Label(lista, text=detalhe, bg=P["surface"], fg=P["muted"], font=self._fonte_tk(11),
+                     anchor="w").grid(row=2 * i + 1, column=0, sticky="w")
+            tk.Label(lista, text=_reais(item["subtotal_centavos"]), bg=P["surface"], fg=P["text"],
+                     font=self._fonte_tk(13, True), anchor="e").grid(row=2 * i, column=1, sticky="e", padx=(12, 0))
+
+        separador()
+        if venda["desconto_centavos"]:
+            # Frame vazio do CTk ocupa 200 px: só cria o resumo quando há desconto.
+            resumo = ctk.CTkFrame(recibo, fg_color=P["surface"])
+            resumo.pack(fill="x", padx=22, pady=(10, 0))
+            resumo.grid_columnconfigure(0, weight=1)
+            for n, (texto, valor, cor) in enumerate((
+                ("Subtotal", _reais(venda["total_centavos"] + venda["desconto_centavos"]), "text_soft"),
+                ("Desconto", f"− {_reais(venda['desconto_centavos'])}", "danger"),
+            )):
+                self._rotulo(resumo, texto, 12, cor=cor).grid(row=n, column=0, sticky="w", pady=1)
+                self._rotulo(resumo, valor, 12, cor=cor).grid(row=n, column=1, sticky="e", pady=1)
+        caixa_total = ctk.CTkFrame(recibo, fg_color=P["canvas"], corner_radius=12)
+        caixa_total.pack(fill="x", padx=22, pady=(10, 12))
+        self._rotulo(caixa_total, "Total", 14, True, "text_soft").pack(side="left", padx=16)
+        self._rotulo(caixa_total, _reais(venda["total_centavos"]), 28, True, "primary_900").pack(side="right", padx=16, pady=8)
+
+        pagto = ctk.CTkFrame(recibo, fg_color=P["surface"])
+        pagto.pack(fill="x", padx=22, pady=(0, 20))
+        pagto.grid_columnconfigure(0, weight=1)
+        self._rotulo(pagto, "PAGAMENTO", 10, True, "primary_700").grid(row=0, column=0, sticky="w", pady=(0, 4))
+        for i, p in enumerate(venda["pagamentos"], start=1):
+            self._rotulo(pagto, p["forma"], 12, True, "text").grid(row=i, column=0, sticky="w", pady=1)
+            self._rotulo(pagto, _reais(p["valor_centavos"]), 12, True, "text").grid(row=i, column=1, sticky="e", pady=1)
+        troco = venda.get("troco_centavos") or 0
+        if troco:
+            n = len(venda["pagamentos"]) + 1
+            dinheiro = sum(p["valor_centavos"] for p in venda["pagamentos"] if p["forma"] == "Dinheiro")
+            self._rotulo(pagto, "Recebido em dinheiro", 12, cor="text_soft").grid(row=n, column=0, sticky="w", pady=(6, 1))
+            self._rotulo(pagto, _reais(dinheiro + troco), 12, cor="text_soft").grid(row=n, column=1, sticky="e", pady=(6, 1))
+            caixa_troco = ctk.CTkFrame(pagto, fg_color=P["accent_soft"], corner_radius=10)
+            caixa_troco.grid(row=n + 1, column=0, columnspan=2, sticky="ew", pady=(6, 0))
+            self._rotulo(caixa_troco, "Troco", 13, True, "primary_900").pack(side="left", padx=14)
+            self._rotulo(caixa_troco, _reais(troco), 18, True, "primary_900").pack(side="right", padx=14, pady=6)
+
+        acoes = ctk.CTkFrame(janela, fg_color=P["canvas"])
+        acoes.pack(fill="x", padx=22, pady=(0, 20))
+        self._btn(acoes, "Fechar   Esc", janela.destroy, "secundario", 130, height=44).pack(side="right")
+        for tecla in ("<Escape>", "<Return>", "<KP_Enter>"):
+            janela.bind(tecla, lambda e: janela.destroy())
+        # Mesma largura para todo recibo; a altura acompanha o conteúdo.
+        janela.update_idletasks()
+        janela.geometry(f"{largura}x{janela.winfo_reqheight()}")
+
+        def focar():
+            try:
+                janela.grab_set()
+            except tk.TclError:
+                pass
+            janela.focus_force()
+
+        janela.after(120, focar)
+        janela.wait_window()
+        self.h_tabela.focus_set()
 
     def _exportar_vendas(self):
         if not getattr(self, "_vendas_filtradas", None):
@@ -2160,7 +2592,8 @@ class AppPDV(_Estilo, ctk.CTk):
                                         text_color=P["primary_900"] if n == nome else P["text_soft"])
 
         for nome in paineis:
-            b = ctk.CTkButton(abas, text=nome, height=32, width=10, corner_radius=8, font=self._fonte(11, True),
+            b = ctk.CTkButton(abas, text=nome, height=self._alvo(32, 44), width=10, corner_radius=8,
+                              font=self._fonte(11, True),
                               hover_color="#ffffff", command=lambda n=nome: mostrar_aba(n))
             b.pack(side="left", padx=4, pady=4)
             botoes_aba[nome] = b
@@ -2186,8 +2619,18 @@ class AppPDV(_Estilo, ctk.CTk):
         crt.grid(row=1, column=2, sticky="ew", padx=(6, 0), pady=6)
         self.cfg_crt = crt.entrada
 
+        card, corpo = self._secao(empresa, "Logo da loja", "Aparece na tela de login e na barra lateral.")
+        card.grid(row=1, column=0, sticky="ew", pady=(0, 12))
+        self.cfg_logo = self._seletor_imagem(
+            corpo, cfg.get("logo_arquivo") or None, "Imagem da logo",
+            "PNG, JPG ou WEBP. Uma imagem com fundo transparente fica melhor. "
+            "O sistema guarda uma cópia: o arquivo original pode ser apagado ou movido.",
+            imagens.LADO_LOGO, quadrada=False, icone_vazio="cart",
+        )
+        self.cfg_logo.pack(fill="x")
+
         card, corpo = self._secao(empresa, "Endereço e contato", "Dados usados nos documentos e comprovantes.")
-        card.grid(row=1, column=0, sticky="ew", pady=(0, 18))
+        card.grid(row=2, column=0, sticky="ew", pady=(0, 18))
         campos(corpo, [("cep", "CEP", False), ("logradouro", "Logradouro", False), ("numero", "Número", False),
                        ("complemento", "Complemento", False), ("bairro", "Bairro", False),
                        ("municipio", "Município", False), ("cod_municipio", "Código IBGE", False)])
@@ -2254,7 +2697,14 @@ class AppPDV(_Estilo, ctk.CTk):
             if not dados.get(chave):
                 messagebox.showwarning("Campo obrigatório", f"Informe: {nome}.")
                 return
+        logo = self.cfg_logo.estado
+        try:
+            dados["logo_arquivo"] = self._gravar_imagem_escolhida(logo, "logo")
+        except OSError as erro:
+            messagebox.showerror("Erro", f"Não foi possível guardar a logo.\n{erro}")
+            return
         banco.salvar_config_fiscal(dados)
+        self._descartar_imagem_antiga(logo, dados["logo_arquivo"])
         self._atualizar_marca()
         self.mostrar_config()
         self._avisar("Configurações salvas com sucesso")
@@ -2466,10 +2916,9 @@ class TelaLogin(_Estilo, ctk.CTk):
 
         marca = ctk.CTkFrame(painel, fg_color="transparent")
         marca.place(x=42, y=34)
-        ctk.CTkLabel(marca, text="", image=icone("cart", 23, P["primary_950"]), width=42, height=42,
-                     corner_radius=13, fg_color=P["accent"]).pack(side="left")
+        self._selo_marca(marca, 56).pack(side="left")
         textos = ctk.CTkFrame(marca, fg_color="transparent")
-        textos.pack(side="left", padx=12)
+        textos.pack(side="left", padx=14)
         loja = _nome_loja()
         if loja:
             self.title(f"{loja} — Entrar")
