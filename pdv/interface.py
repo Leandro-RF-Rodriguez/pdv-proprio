@@ -9,6 +9,7 @@ status e avisos rápidos (toasts) no lugar de janelas de "OK".
 Rodar com:  python3 -m pdv   (ou python3 pdv_app.py, na raiz)
 """
 
+import re
 import threading
 import tkinter as tk
 import urllib.error
@@ -31,6 +32,27 @@ SENHA_MINIMA = 4
 LIMITE_CARTOES = 45      # cartões do catálogo desenhados de uma vez (widgets são pesados)
 ATRASO_BUSCA_MS = 200    # espera o operador parar de digitar antes de redesenhar
 UNIDADES_FRACIONADAS = ("KG", "G", "L", "ML", "M")  # no carrinho, −/+ andam de 0,5
+LARGURA_CARTAO = 200     # largura mínima de um cartão do catálogo: define quantas colunas cabem
+COLUNAS_CATALOGO = (3, 5)  # mínimo e máximo de colunas do catálogo
+NOTAS = (1000, 2000, 5000, 10000, 20000)  # atalhos de "valor recebido" (centavos)
+
+# Explicações em linguagem simples para os campos fiscais (ícone "?").
+AJUDA_FISCAL = {
+    "ncm": "Código de 8 dígitos que diz o que é o produto para a Receita. "
+           "Está na nota fiscal de compra do fornecedor. Ex.: água mineral = 22011000.",
+    "cest": "Só é exigido para produtos com substituição tributária (bebidas, cigarros, "
+            "combustíveis…). Se o fornecedor não informa, deixe em branco.",
+    "cfop": "Diz o tipo da operação. Para venda ao consumidor dentro do estado, "
+            "quase sempre é 5102 (ou 5405 se o produto tem substituição tributária).",
+    "origem": "De onde vem o produto: 0 = nacional (o mais comum), 1 ou 2 = importado. "
+              "Na dúvida, confirme com o contador.",
+    "cst": "Como o ICMS é cobrado. No Simples Nacional, use o CSOSN (ex.: 102). "
+           "Peça ao contador o código certo para os seus produtos.",
+    "tipo_item": "Classificação para o SPED. Para mercadoria comprada para revenda, use 00.",
+    "aliquota_icms": "Porcentagem do ICMS. No Simples Nacional normalmente fica 0.",
+    "aliquota_aprox": "Porcentagem aproximada de impostos que aparece no cupom (Lei da "
+                      "Transparência). A tabela IBPT informa o valor por NCM.",
+}
 UFS = ["AC", "AL", "AM", "AP", "BA", "CE", "DF", "ES", "GO", "MA", "MG", "MS", "MT", "PA",
        "PB", "PE", "PI", "PR", "RJ", "RN", "RO", "RR", "RS", "SC", "SE", "SP", "TO"]
 DIAS_SEMANA = ["Segunda-feira", "Terça-feira", "Quarta-feira", "Quinta-feira", "Sexta-feira", "Sábado", "Domingo"]
@@ -52,7 +74,7 @@ P = {
     "surface": "#ffffff",
     "text": "#17372f",
     "text_soft": "#526b63",
-    "muted": "#82938d",
+    "muted": "#64746e",  # contraste ≥ 4,5:1 sobre canvas/surface (texto pequeno legível)
     "line": "#d9e6df",
     "line_soft": "#e9f0ec",
     "line_hover": "#9fc5b2",
@@ -128,6 +150,27 @@ def _data_iso(texto):
     return datetime.strptime(texto.strip(), "%d/%m/%Y").date().isoformat()
 
 
+def _nome_loja():
+    """Nome fantasia (ou razão social) cadastrado nas Configurações; '' se não houver."""
+    cfg = banco.ler_config_fiscal()
+    nome = (cfg.get("nome_fantasia") or cfg.get("razao_social") or "").strip()
+    return nome if len(nome) <= 40 else nome[:39] + "…"
+
+
+def _ler_reais(texto):
+    """'R$ 1.234,56', '1234,56' ou '100' -> centavos. ValueError se inválido ou negativo.
+
+    '100' é sempre cem reais (nunca R$ 1,00): é o que o operador quer dizer ao digitar.
+    """
+    texto = texto.replace("R$", "").replace(" ", "")
+    if "," in texto or re.fullmatch(r"\d{1,3}(\.\d{3})+", texto):
+        texto = texto.replace(".", "")  # ponto de milhar ('1.000' = mil reais)
+    centavos = banco.para_centavos(texto)
+    if centavos < 0:
+        raise ValueError(texto)
+    return centavos
+
+
 def _centavos_ou_zero(texto):
     texto = (texto or "").strip()
     return banco.para_centavos(texto) if texto else 0
@@ -186,17 +229,46 @@ class _Estilo:
                       text_color=P["text"], placeholder_text_color="#a0ada8", font=self._fonte(12))
         return ctk.CTkEntry(parent, placeholder_text=placeholder, show="•" if senha else "", **{**opcoes, **kw})
 
-    def _titulo_campo(self, parent, rotulo, obrigatorio=False):
+    def _titulo_campo(self, parent, rotulo, obrigatorio=False, ajuda=None):
         linha = ctk.CTkFrame(parent, fg_color="transparent")
         self._rotulo(linha, rotulo, 10, True, "text_soft").pack(side="left")
         if obrigatorio:
             self._rotulo(linha, " *", 10, True, "danger").pack(side="left")
+        if ajuda:
+            self._dica(linha, ajuda).pack(side="left", padx=(6, 0))
         return linha
 
-    def _campo(self, parent, rotulo, placeholder="", valor="", obrigatorio=False, senha=False):
+    def _dica(self, parent, texto):
+        """Bolinha "?" que mostra uma explicação ao passar o mouse (ou tocar)."""
+        botao = ctk.CTkLabel(parent, text="?", width=16, height=16, corner_radius=8, cursor="question_arrow",
+                             fg_color=P["primary_100"], text_color=P["primary_800"], font=self._fonte(10, True))
+        balao = {}
+
+        def mostrar(_evento=None):
+            if balao:
+                return
+            janela = tk.Toplevel(botao)
+            janela.wm_overrideredirect(True)
+            janela.configure(bg=P["primary_950"])
+            tk.Label(janela, text=texto, bg=P["primary_950"], fg="#ffffff", font=self._fonte_tk(12),
+                     wraplength=280, justify="left", padx=12, pady=9).pack()
+            janela.geometry(f"+{botao.winfo_rootx() + 22}+{botao.winfo_rooty() - 4}")
+            balao["janela"] = janela
+
+        def esconder(_evento=None):
+            if balao:
+                balao.pop("janela").destroy()
+
+        botao.bind("<Enter>", mostrar)
+        botao.bind("<Button-1>", lambda e: esconder() if balao else mostrar())
+        botao.bind("<Leave>", esconder)
+        botao.bind("<Destroy>", esconder)
+        return botao
+
+    def _campo(self, parent, rotulo, placeholder="", valor="", obrigatorio=False, senha=False, ajuda=None):
         """Rótulo em cima + campo. O campo fica em `.entrada`."""
         quadro = ctk.CTkFrame(parent, fg_color="transparent")
-        self._titulo_campo(quadro, rotulo, obrigatorio).pack(anchor="w", pady=(0, 5))
+        self._titulo_campo(quadro, rotulo, obrigatorio, ajuda).pack(anchor="w", pady=(0, 5))
         quadro.entrada = self._entry(quadro, placeholder, senha=senha)
         quadro.entrada.pack(fill="x")
         if valor:
@@ -318,9 +390,7 @@ class AppPDV(_Estilo, ctk.CTk):
 
         self.carrinho = []
         self.produto_sel_id = None
-        self.forma_venda = "Dinheiro"
         self.desconto = 0                 # centavos
-        self.pagamento_dividido = None    # [{forma, valor_centavos}] ou None
         self.relogar = False
         self.tela = None
         self._busca_agendada = None
@@ -515,12 +585,16 @@ class AppPDV(_Estilo, ctk.CTk):
             self._kpi(grade, *kpi).grid(row=0, column=i, sticky="ew", padx=(0 if i == 0 else 6, 0 if i == len(kpis) - 1 else 6))
         return grade
 
-    def _avisar(self, texto):
-        """Toast na base da janela (some sozinho), para confirmações de sucesso."""
+    def _avisar(self, texto, erro=False):
+        """Toast na base da janela (some sozinho): confirmações e erros que não exigem resposta."""
         if self._toast is not None:
             self._toast.destroy()
-        toast = ctk.CTkFrame(self, fg_color=P["primary_950"], corner_radius=11)
-        ctk.CTkLabel(toast, text="", image=icone("check", 17, P["accent"])).pack(side="left", padx=(16, 8), pady=10)
+        toast = ctk.CTkFrame(self, fg_color=P["danger"] if erro else P["primary_950"], corner_radius=11)
+        if erro:
+            ctk.CTkLabel(toast, text="!", width=20, height=20, corner_radius=10, fg_color="#ffffff",
+                         text_color=P["danger"], font=self._fonte(12, True)).pack(side="left", padx=(16, 8), pady=10)
+        else:
+            ctk.CTkLabel(toast, text="", image=icone("check", 17, P["accent"])).pack(side="left", padx=(16, 8), pady=10)
         ctk.CTkLabel(toast, text=texto, font=self._fonte(12, True), text_color="#ffffff").pack(side="left", padx=(0, 18))
         toast.place(relx=0.5, rely=1.0, x=111, y=-24, anchor="s")  # centro da área de trabalho
         toast.lift()
@@ -531,7 +605,7 @@ class AppPDV(_Estilo, ctk.CTk):
                 toast.destroy()
                 self._toast = None
 
-        self.after(2800, sumir)
+        self.after(4000 if erro else 2800, sumir)
 
     # ---------- Barra lateral ----------
     def _montar_barra_lateral(self):
@@ -545,8 +619,11 @@ class AppPDV(_Estilo, ctk.CTk):
                      corner_radius=13, fg_color=P["accent"]).pack(side="left")
         textos = ctk.CTkFrame(marca, fg_color="transparent")
         textos.pack(side="left", padx=(12, 0))
-        self._rotulo(textos, "PDV Próprio", 15, True, "#ffffff").pack(anchor="w")
-        self._rotulo(textos, "Ponto de venda", 11, cor="brand_sub").pack(anchor="w")
+        self.lbl_marca = self._rotulo(textos, "", 15, True, "#ffffff", justify="left", wraplength=130)
+        self.lbl_marca.pack(anchor="w")
+        self.lbl_marca_sub = self._rotulo(textos, "", 11, cor="brand_sub")
+        self.lbl_marca_sub.pack(anchor="w")
+        self._atualizar_marca()
         ctk.CTkFrame(barra, height=1, fg_color=P["nav_line"], corner_radius=0).pack(fill="x")
 
         nav = ctk.CTkFrame(barra, fg_color="transparent")
@@ -594,6 +671,13 @@ class AppPDV(_Estilo, ctk.CTk):
         ctk.CTkButton(operador, text="", image=icone("logout", 17, P["nav_text"]), width=30, height=30,
                       corner_radius=8, fg_color="transparent", hover_color=P["nav_hover"],
                       command=self._sair).pack(side="right")
+
+    def _atualizar_marca(self):
+        """Mostra o nome fantasia da loja (Configurações) no lugar do nome genérico."""
+        loja = _nome_loja()
+        self.lbl_marca.configure(text=loja or "PDV Próprio")
+        self.lbl_marca_sub.configure(text="PDV Próprio" if loja else "Ponto de venda")
+        self.title(f"{loja} — PDV Próprio" if loja else "PDV Próprio")
 
     def _item_menu(self, parent, chave, texto, nome_icone, comando):
         item = ctk.CTkFrame(parent, height=42, corner_radius=10, fg_color="transparent", cursor="hand2")
@@ -692,9 +776,7 @@ class AppPDV(_Estilo, ctk.CTk):
     def mostrar_vendas(self):
         self._limpar_area("vendas")
         self.carrinho = []
-        self.forma_venda = "Dinheiro"
         self.desconto = 0
-        self.pagamento_dividido = None
         self.produtos_venda = banco.listar_produtos()
         for p in self.produtos_venda:
             p["_busca"] = p["descricao"].lower()
@@ -800,9 +882,25 @@ class AppPDV(_Estilo, ctk.CTk):
         self.grade = ctk.CTkScrollableFrame(catalogo, fg_color="transparent", corner_radius=0,
                                             scrollbar_button_color=P["line"], scrollbar_button_hover_color=P["line_hover"])
         self.grade.grid(row=2, column=0, sticky="nsew")
-        for i in range(3):
-            self.grade.grid_columnconfigure(i, weight=1, uniform="cards")
+        self._colunas_catalogo = COLUNAS_CATALOGO[0]
+        self._configurar_colunas()
+        # Janela maior = mais colunas (3 a 5), sem cartões esticados demais.
+        catalogo.bind("<Configure>", self._ajustar_colunas)
         return catalogo
+
+    def _configurar_colunas(self):
+        for i in range(COLUNAS_CATALOGO[1]):
+            ativa = i < self._colunas_catalogo
+            self.grade.grid_columnconfigure(i, weight=1 if ativa else 0, uniform="cards" if ativa else "")
+
+    def _ajustar_colunas(self, evento):
+        minimo, maximo = COLUNAS_CATALOGO
+        colunas = max(minimo, min(maximo, evento.width // LARGURA_CARTAO))
+        if colunas != self._colunas_catalogo:
+            self._colunas_catalogo = colunas
+            self._configurar_colunas()
+            self._filtro_desenhado = None  # força redesenhar com o novo número de colunas
+            self._desenhar_catalogo(self.campo_venda_cod.get())
 
     def _pintar_categorias(self):
         for nome, b in self.botoes_categoria.items():
@@ -846,20 +944,47 @@ class AppPDV(_Estilo, ctk.CTk):
 
         prods = self._filtrar_catalogo(filtro)
         self.lbl_qtd_catalogo.configure(text=f"{len(prods)} produto(s)")
+        colunas = self._colunas_catalogo
+        if not self.produtos_venda:
+            self._catalogo_vazio(
+                "package", "Seu catálogo ainda está vazio",
+                "Cadastre o primeiro produto para começar a vender.",
+                "Cadastrar primeiro produto", self.mostrar_form_produto,
+            )
+            return
         if not prods:
-            vazio = ctk.CTkFrame(self.grade, fg_color="transparent")
-            vazio.grid(row=0, column=0, columnspan=3, pady=60)
-            ctk.CTkLabel(vazio, text="", image=icone("search", 26, P["primary_700"]), width=56, height=56,
-                         corner_radius=18, fg_color=P["primary_50"]).pack()
-            self._rotulo(vazio, "Nenhum produto encontrado", 13, True).pack(pady=(12, 2))
-            self._rotulo(vazio, "Tente buscar com outro termo ou categoria.", 11, cor="muted").pack()
+            onde = f" para “{filtro}”" if filtro else ""
+            categoria = f" na categoria {self.categoria_venda}" if self.categoria_venda != "Todos" else ""
+            self._catalogo_vazio(
+                "search", f"Nenhum produto encontrado{onde}{categoria}",
+                "Confira o nome ou o código, ou procure em todas as categorias.",
+                "Limpar pesquisa", self._limpar_pesquisa,
+            )
             return
         for idx, p in enumerate(prods[:LIMITE_CARTOES]):
-            self._cartao_produto(p).grid(row=idx // 3, column=idx % 3, padx=5, pady=5, sticky="nsew")
+            self._cartao_produto(p).grid(row=idx // colunas, column=idx % colunas, padx=5, pady=5, sticky="nsew")
         if len(prods) > LIMITE_CARTOES:
             self._rotulo(
                 self.grade, f"+{len(prods) - LIMITE_CARTOES} produto(s) — refine a busca.", 11, cor="muted"
-            ).grid(row=LIMITE_CARTOES // 3 + 1, column=0, columnspan=3, pady=10)
+            ).grid(row=LIMITE_CARTOES // colunas + 1, column=0, columnspan=colunas, pady=10)
+
+    def _catalogo_vazio(self, nome_icone, titulo, texto, acao, comando):
+        """Estado vazio do catálogo: explica o que houve e oferece o próximo passo."""
+        vazio = ctk.CTkFrame(self.grade, fg_color="transparent")
+        vazio.grid(row=0, column=0, columnspan=self._colunas_catalogo, pady=60)
+        ctk.CTkLabel(vazio, text="", image=icone(nome_icone, 26, P["primary_700"]), width=56, height=56,
+                     corner_radius=18, fg_color=P["primary_50"]).pack()
+        self._rotulo(vazio, titulo, 14, True, wraplength=420).pack(pady=(12, 2))
+        self._rotulo(vazio, texto, 11, cor="muted").pack()
+        self._btn(vazio, acao, comando, "secundario", width=200).pack(pady=(14, 0))
+
+    def _limpar_pesquisa(self):
+        self.campo_venda_cod.delete(0, tk.END)
+        self.categoria_venda = "Todos"
+        self._pintar_categorias()
+        self._filtro_desenhado = None
+        self._desenhar_catalogo()
+        self.campo_venda_cod.focus()
 
     def _cartao_produto(self, p):
         card = ctk.CTkFrame(self.grade, fg_color=P["surface"], corner_radius=13, border_width=1,
@@ -909,24 +1034,13 @@ class AppPDV(_Estilo, ctk.CTk):
         self.lista_carrinho.grid_columnconfigure(0, weight=1)
 
         ctk.CTkFrame(checkout, height=1, fg_color=P["line_soft"], corner_radius=0).grid(row=2, column=0, sticky="ew", padx=1)
+        # A forma de pagamento e o troco ficam na janela de pagamento (F4): aqui só os totais.
         rodape = ctk.CTkFrame(checkout, fg_color="transparent")
         rodape.grid(row=3, column=0, sticky="ew", padx=16, pady=(10, 12))
-        rodape.grid_columnconfigure((0, 1, 2), weight=1, uniform="formas")
-
-        titulo = ctk.CTkFrame(rodape, fg_color="transparent")
-        titulo.grid(row=0, column=0, columnspan=3, sticky="ew", pady=(0, 6))
-        self._rotulo(titulo, "Forma de pagamento", 11, True, "text_soft").pack(side="left")
-        self._link(titulo, "Dividir pagamento", self._dividir_pagamento).pack(side="right")
-
-        self.botoes_forma = {}
-        for i, (forma, nome_icone) in enumerate(FORMAS_PAGAMENTO):
-            b = ctk.CTkButton(rodape, text=forma, height=40, corner_radius=9, font=self._fonte(11, True),
-                              command=lambda f=forma: self._selecionar_forma(f))
-            b.grid(row=1, column=i, sticky="ew", padx=(0 if i == 0 else 3, 0 if i == 2 else 3))
-            self.botoes_forma[forma] = (b, nome_icone)
+        rodape.grid_columnconfigure(0, weight=1)
 
         totais = ctk.CTkFrame(rodape, fg_color="transparent")
-        totais.grid(row=2, column=0, columnspan=3, sticky="ew", pady=(10, 0))
+        totais.grid(row=2, column=0, sticky="ew")
         totais.grid_columnconfigure(0, weight=1)
         self._rotulo(totais, "Subtotal", 11, cor="text_soft").grid(row=0, column=0, sticky="w")
         self.label_subtotal = self._rotulo(totais, "", 11, cor="text_soft")
@@ -942,41 +1056,20 @@ class AppPDV(_Estilo, ctk.CTk):
         self.label_tributos = self._rotulo(totais, "", 10, cor="muted")
         self.label_tributos.grid(row=2, column=1, sticky="e")
 
-        ctk.CTkFrame(rodape, height=1, fg_color=P["line"]).grid(row=3, column=0, columnspan=3, sticky="ew", pady=8)
+        ctk.CTkFrame(rodape, height=1, fg_color=P["line"]).grid(row=3, column=0, sticky="ew", pady=8)
         total = ctk.CTkFrame(rodape, fg_color="transparent")
-        total.grid(row=4, column=0, columnspan=3, sticky="ew", pady=(0, 10))
+        total.grid(row=4, column=0, sticky="ew", pady=(0, 10))
         self._rotulo(total, "Total", 13, True).pack(side="left", anchor="s", pady=(0, 6))
-        self.label_total = self._rotulo(total, "", 28, True, "primary_900")
+        self.label_total = self._rotulo(total, "", 30, True, "primary_900")
         self.label_total.pack(side="right")
 
-        self.btn_finalizar = self._btn(rodape, "Finalizar venda      F4", self.finalizar_venda, height=46)
-        self.btn_finalizar.grid(row=5, column=0, columnspan=3, sticky="ew")
+        self.btn_finalizar = self._btn(rodape, "Ir para o pagamento      F4", self.finalizar_venda, height=48)
+        self.btn_finalizar.grid(row=5, column=0, sticky="ew")
         self._btn(rodape, "Emitir NFC-e", self._emitir_nfce, "secundario", height=34,
-                  icone_nome="receipt").grid(row=6, column=0, columnspan=3, sticky="ew", pady=(6, 0))
-        self.lbl_dica = self._rotulo(rodape, "", 10, cor="muted", wraplength=320)
-        self.lbl_dica.grid(row=7, column=0, columnspan=3, pady=(8, 0))
+                  icone_nome="receipt").grid(row=6, column=0, sticky="ew", pady=(6, 0))
+        self._rotulo(rodape, "Na próxima tela você escolhe a forma de pagamento e vê o troco.", 10,
+                     cor="muted", wraplength=320).grid(row=7, column=0, pady=(8, 0))
         return checkout
-
-    def _selecionar_forma(self, forma):
-        self.forma_venda = forma
-        self.pagamento_dividido = None
-        self._pintar_formas()
-
-    def _pintar_formas(self):
-        for forma, (b, nome_icone) in self.botoes_forma.items():
-            ativo = self.pagamento_dividido is None and forma == self.forma_venda
-            cor = "#ffffff" if ativo else P["text_soft"]
-            b.configure(
-                image=icone(nome_icone, 17, cor), text_color=cor,
-                fg_color=P["primary_800"] if ativo else "#fbfdfc",
-                hover_color=P["primary_900"] if ativo else P["primary_50"],
-                border_width=0 if ativo else 1, border_color=P["line"],
-            )
-        if self.pagamento_dividido:
-            partes = " + ".join(f"{p['forma']} {_reais(p['valor_centavos'])}" for p in self.pagamento_dividido)
-            self.lbl_dica.configure(text=f"Pagamento dividido: {partes}.")
-        else:
-            self.lbl_dica.configure(text=f"Ao finalizar, a venda será registrada em {self.forma_venda}.")
 
     def _adicionar_ao_carrinho(self, produto):
         item = next((i for i in self.carrinho if i["produto_id"] == produto["id"]), None)
@@ -1007,7 +1100,10 @@ class AppPDV(_Estilo, ctk.CTk):
             self.campo_venda_cod.delete(0, tk.END)
             self._desenhar_catalogo()
         else:
-            self.bell()  # nada encontrado
+            # Antes era só um bip: o operador não sabia o que tinha acontecido.
+            self.bell()
+            self._avisar(f"Nenhum produto com o código ou nome “{texto}”. Confira ou cadastre o produto.", erro=True)
+            self.campo_venda_cod.select_range(0, tk.END)  # a próxima leitura substitui o texto
         self.campo_venda_cod.focus()
 
     def _passo(self, item):
@@ -1041,7 +1137,6 @@ class AppPDV(_Estilo, ctk.CTk):
     def _limpar_carrinho(self):
         self.carrinho = []
         self.desconto = 0
-        self.pagamento_dividido = None
         self._redesenhar_carrinho()
 
     def _subtotal(self):
@@ -1075,8 +1170,6 @@ class AppPDV(_Estilo, ctk.CTk):
         total = subtotal - desconto
         if subtotal:
             tributos = round(tributos * total / subtotal)  # o desconto também reduz os tributos
-        if self.pagamento_dividido and sum(p["valor_centavos"] for p in self.pagamento_dividido) != total:
-            self.pagamento_dividido = None  # o total mudou: a divisão antiga não vale mais
 
         qtd = sum(i["quantidade"] for i in self.carrinho)
         self.lbl_itens.configure(text=f"{_qtd(qtd)} {'item adicionado' if qtd == 1 else 'itens adicionados'}")
@@ -1091,7 +1184,6 @@ class AppPDV(_Estilo, ctk.CTk):
         self.label_total.configure(text=_reais(total))
         self.btn_finalizar.configure(state="normal" if self.carrinho else "disabled",
                                      fg_color=P["primary_900"] if self.carrinho else "#9fb3ab")
-        self._pintar_formas()
 
     def _linha_carrinho(self, idx, item, sub):
         linha = ctk.CTkFrame(self.lista_carrinho, fg_color="#ffffff", corner_radius=12,
@@ -1160,14 +1252,8 @@ class AppPDV(_Estilo, ctk.CTk):
             self.desconto = converter(resposta["valor"])
             self._redesenhar_carrinho()
 
-    def _dividir_pagamento(self):
-        total = self._total_atual()
-        if not self.carrinho or not total:
-            messagebox.showinfo("Dividir pagamento", "Adicione produtos antes de dividir o pagamento.")
-            return
-        atuais = {p["forma"]: p["valor_centavos"] for p in (self.pagamento_dividido or [])}
-        atuais = atuais or {self.forma_venda: total}
-
+    def _dividir_pagamento(self, total, atuais):
+        """Pede quanto vai em cada forma. atuais: {forma: centavos}. Devolve [{forma, valor_centavos}] ou None."""
         def validar(v):
             try:
                 valores = [_centavos_ou_zero(t) for t in v.values()]
@@ -1186,14 +1272,9 @@ class AppPDV(_Estilo, ctk.CTk):
             validar, "Aplicar",
         )
         if not resposta:
-            return
+            return None
         pagamentos = [{"forma": f, "valor_centavos": _centavos_ou_zero(t)} for f, t in resposta.items()]
-        pagamentos = [p for p in pagamentos if p["valor_centavos"] > 0]
-        if len(pagamentos) == 1:
-            self._selecionar_forma(pagamentos[0]["forma"])
-        else:
-            self.pagamento_dividido = pagamentos
-            self._pintar_formas()
+        return [p for p in pagamentos if p["valor_centavos"] > 0]
 
     def _emitir_nfce(self):
         if not self.carrinho:
@@ -1213,22 +1294,211 @@ class AppPDV(_Estilo, ctk.CTk):
         )
 
     def finalizar_venda(self):
+        """F4 / "Ir para o pagamento": abre a janela de pagamento e grava a venda se confirmar."""
         if not self.carrinho:
             return
-        sessao = banco.sessao_aberta()
         total = self._total_atual()
-        pagamentos = self.pagamento_dividido or [{"forma": self.forma_venda, "valor_centavos": total}]
+        pagamento = self._janela_pagamento(total)
+        if not pagamento:
+            self.campo_venda_cod.focus()
+            return
+        sessao = banco.sessao_aberta()
         try:
             venda_id, total_gravado = banco.registrar_venda(
-                self.carrinho, pagamentos, sessao and sessao["id"], self.desconto,
+                self.carrinho, pagamento["pagamentos"], sessao and sessao["id"], self.desconto,
             )
         except Exception as erro:
             messagebox.showerror("Erro", f"Não foi possível registrar a venda.\n{erro}")
             return
-        self._avisar(f"Venda #{venda_id} de {_reais(total_gravado)} concluída com sucesso")
+        troco = f" · Troco {_reais(pagamento['troco'])}" if pagamento["troco"] else ""
+        self._avisar(f"Venda #{venda_id} de {_reais(total_gravado)} concluída{troco}")
         self._limpar_carrinho()
         self._atualizar_numero_venda()
         self.campo_venda_cod.focus()
+
+    def _janela_pagamento(self, total):
+        """Janela modal: forma de pagamento, valor recebido e troco.
+
+        Teclado: F1/F2/F3 escolhem a forma, Enter conclui, Esc volta para a venda.
+        Devolve {"pagamentos": [{forma, valor_centavos}], "troco": centavos} ou None.
+        """
+        janela = ctk.CTkToplevel(self)
+        janela.title("Pagamento")
+        janela.resizable(False, False)
+        janela.transient(self)
+        janela.configure(fg_color=P["surface"])
+        estado = {"pagamentos": [{"forma": "Dinheiro", "valor_centavos": total}], "troco": 0}
+        resultado = {}
+
+        corpo = ctk.CTkFrame(janela, fg_color=P["surface"])
+        corpo.pack(padx=26, pady=22, fill="both")
+        corpo.grid_columnconfigure(0, weight=1)
+        qtd = sum(i["quantidade"] for i in self.carrinho)
+        self._rotulo(corpo, "Pagamento", 20, True, "primary_950").grid(row=0, column=0, sticky="w")
+        self._rotulo(corpo, f"Venda #{banco.proximo_numero_venda()} · {_qtd(qtd)} {'item' if qtd == 1 else 'itens'}",
+                     11, cor="muted").grid(row=1, column=0, sticky="w")
+
+        caixa_total = ctk.CTkFrame(corpo, fg_color=P["canvas"], corner_radius=12)
+        caixa_total.grid(row=2, column=0, sticky="ew", pady=(14, 16))
+        self._rotulo(caixa_total, "Total a pagar", 13, True, "text_soft").pack(side="left", padx=16)
+        self._rotulo(caixa_total, _reais(total), 30, True, "primary_900").pack(side="right", padx=16, pady=10)
+
+        cab_formas = ctk.CTkFrame(corpo, fg_color=P["surface"])
+        cab_formas.grid(row=3, column=0, sticky="ew", pady=(0, 6))
+        self._rotulo(cab_formas, "Como o cliente vai pagar?", 12, True, "text").pack(side="left")
+        self._link(cab_formas, "Dividir em mais de uma forma", lambda: dividir()).pack(side="right")
+        formas = ctk.CTkFrame(corpo, fg_color=P["surface"])
+        formas.grid(row=4, column=0, sticky="ew")
+        formas.grid_columnconfigure((0, 1, 2), weight=1, uniform="formas")
+        botoes = {}
+        for i, (forma, nome_icone) in enumerate(FORMAS_PAGAMENTO):
+            b = ctk.CTkButton(formas, text=f"{forma}   F{i + 1}", height=52, corner_radius=11,
+                              font=self._fonte(13, True), command=lambda f=forma: escolher(f))
+            b.grid(row=0, column=i, sticky="ew", padx=(0 if i == 0 else 4, 0 if i == 2 else 4))
+            botoes[forma] = (b, nome_icone)
+        lbl_divisao = self._rotulo(corpo, "", 11, True, "primary_800", justify="left")
+        lbl_divisao.grid(row=5, column=0, sticky="w", pady=(6, 0))
+
+        # Bloco do dinheiro: valor recebido + troco (some quando não há parte em dinheiro).
+        dinheiro = ctk.CTkFrame(corpo, fg_color=P["surface"])
+        dinheiro.grid_columnconfigure(0, weight=1)
+        self._rotulo(dinheiro, "Valor recebido em dinheiro", 12, True, "text").grid(row=0, column=0, sticky="w", pady=(14, 6))
+        recebido = self._entry(dinheiro, "0,00", height=50, font=self._fonte(20, True))
+        recebido.grid(row=1, column=0, sticky="ew")
+        notas = ctk.CTkFrame(dinheiro, fg_color=P["surface"])
+        notas.grid(row=2, column=0, sticky="ew", pady=(8, 0))
+        rotulos_notas = [("Valor exato", None)] + [(_reais(n).replace(",00", ""), n) for n in NOTAS]
+        for i, (texto, valor) in enumerate(rotulos_notas):
+            notas.grid_columnconfigure(i, weight=1)
+            ctk.CTkButton(notas, text=texto, height=38, corner_radius=9, font=self._fonte(11, True),
+                          fg_color=P["primary_50"], hover_color=P["primary_100"], text_color=P["primary_800"],
+                          border_width=1, border_color=P["line"],
+                          command=lambda v=valor: definir_recebido(v)).grid(
+                row=0, column=i, sticky="ew", padx=(0 if i == 0 else 3, 0))
+        caixa_troco = ctk.CTkFrame(dinheiro, corner_radius=12)
+        caixa_troco.grid(row=3, column=0, sticky="ew", pady=(12, 0))
+        lbl_troco_titulo = self._rotulo(caixa_troco, "", 14, True)
+        lbl_troco_titulo.pack(side="left", padx=16)
+        lbl_troco = self._rotulo(caixa_troco, "", 32, True)
+        lbl_troco.pack(side="right", padx=16, pady=8)
+
+        lbl_outras = self._rotulo(corpo, "", 12, cor="text_soft", justify="left", wraplength=470)
+
+        acoes = ctk.CTkFrame(corpo, fg_color=P["surface"])
+        acoes.grid(row=8, column=0, sticky="ew", pady=(20, 0))
+        btn_concluir = self._btn(acoes, "Concluir venda   Enter", lambda: concluir(), width=230, height=50)
+        btn_concluir.pack(side="right")
+        self._btn(acoes, "Voltar   Esc", janela.destroy, "secundario", 130, height=50).pack(side="right", padx=(0, 8))
+
+        def parte_dinheiro():
+            return sum(p["valor_centavos"] for p in estado["pagamentos"] if p["forma"] == "Dinheiro")
+
+        def atualizar(_evento=None):
+            em_dinheiro = parte_dinheiro()
+            dividido = len(estado["pagamentos"]) > 1
+            unica = None if dividido else estado["pagamentos"][0]["forma"]
+            for forma, (b, nome_icone) in botoes.items():
+                ativo = forma == unica
+                cor = "#ffffff" if ativo else P["text_soft"]
+                b.configure(image=icone(nome_icone, 18, cor), text_color=cor,
+                            fg_color=P["primary_800"] if ativo else "#fbfdfc",
+                            hover_color=P["primary_900"] if ativo else P["primary_50"],
+                            border_width=0 if ativo else 1, border_color=P["line"])
+            lbl_divisao.configure(text="Dividido: " + " + ".join(
+                f"{p['forma']} {_reais(p['valor_centavos'])}" for p in estado["pagamentos"]) if dividido else "")
+
+            outras = [p for p in estado["pagamentos"] if p["forma"] != "Dinheiro"]
+            if outras:
+                texto = " e ".join(f"{_reais(p['valor_centavos'])} no {p['forma']}" for p in outras)
+                lbl_outras.configure(text=f"Confirme o recebimento de {texto} na maquininha ou no app do banco "
+                                          "antes de concluir.")
+                # Sem dinheiro, o aviso ocupa o lugar do bloco de troco (linha 6).
+                lbl_outras.grid(row=7 if em_dinheiro else 6, column=0, sticky="nw", pady=(14, 0))
+            else:
+                lbl_outras.grid_remove()
+
+            if not em_dinheiro:
+                dinheiro.grid_remove()
+                estado["troco"] = 0
+                btn_concluir.configure(state="normal", fg_color=P["primary_900"])
+                return
+            dinheiro.grid(row=6, column=0, sticky="ew")
+            try:
+                valor = _ler_reais(recebido.get()) if recebido.get().strip() else 0
+            except (ValueError, OverflowError):
+                valor = None
+            if valor is None or valor < em_dinheiro:
+                falta = em_dinheiro - (valor or 0)
+                caixa_troco.configure(fg_color=P["danger_soft"])
+                lbl_troco_titulo.configure(text="Valor inválido" if valor is None else "Falta receber",
+                                           text_color=P["danger"])
+                lbl_troco.configure(text="—" if valor is None else _reais(falta), text_color=P["danger"])
+                estado["troco"] = None
+                btn_concluir.configure(state="disabled", fg_color="#9fb3ab")
+            else:
+                estado["troco"] = valor - em_dinheiro
+                caixa_troco.configure(fg_color=P["accent_soft"])
+                lbl_troco_titulo.configure(text="Troco", text_color=P["primary_900"])
+                lbl_troco.configure(text=_reais(estado["troco"]), text_color=P["primary_900"])
+                btn_concluir.configure(state="normal", fg_color=P["primary_900"])
+
+        def definir_recebido(valor):
+            recebido.delete(0, tk.END)
+            recebido.insert(0, banco.formatar_reais(valor if valor is not None else parte_dinheiro()))
+            atualizar()
+            recebido.focus()
+
+        def escolher(forma):
+            estado["pagamentos"] = [{"forma": forma, "valor_centavos": total}]
+            definir_recebido(None)
+            recebido.select_range(0, tk.END)
+
+        def dividir():
+            janela.grab_release()
+            atuais = {p["forma"]: p["valor_centavos"] for p in estado["pagamentos"]}
+            pagamentos = self._dividir_pagamento(total, atuais)
+            if janela.winfo_exists():
+                # Ao fechar o diálogo, o foco voltaria para a janela principal: traz de volta para cá.
+                janela.grab_set()
+                janela.lift()
+                janela.focus_force()
+                if pagamentos:
+                    estado["pagamentos"] = pagamentos
+                definir_recebido(None)
+                recebido.select_range(0, tk.END)
+
+        def concluir(_evento=None):
+            if estado["troco"] is None:
+                recebido.focus()
+                recebido.select_range(0, tk.END)
+                return
+            resultado.update(estado)
+            janela.destroy()
+
+        recebido.bind("<KeyRelease>", atualizar)
+        for tecla in ("<Return>", "<KP_Enter>"):
+            janela.bind(tecla, concluir)
+        janela.bind("<Escape>", lambda e: janela.destroy())
+        for i, (forma, _) in enumerate(FORMAS_PAGAMENTO):
+            janela.bind(f"<F{i + 1}>", lambda e, f=forma: escolher(f))
+
+        escolher("Dinheiro")
+        # Trava o tamanho com o bloco de troco visível: trocar para Cartão/Pix não faz a janela "pular".
+        janela.update_idletasks()
+        corpo.grid_rowconfigure(6, minsize=dinheiro.winfo_reqheight())
+        corpo.grid_columnconfigure(0, minsize=corpo.winfo_reqwidth())
+
+        def focar():
+            try:
+                janela.grab_set()  # modal: bloqueia a janela de trás
+            except tk.TclError:
+                pass
+            recebido.focus()
+            recebido.select_range(0, tk.END)
+
+        janela.after(120, focar)
+        janela.wait_window()
+        return resultado or None
 
     # ==================================================================
     # Tela de Produtos (pesquisa + formulário)
@@ -1408,7 +1678,8 @@ class AppPDV(_Estilo, ctk.CTk):
                                   ("NFC-e / SPED", "neutro"))
         card.grid(row=2, column=0, sticky="ew", pady=(0, 18), padx=(0, 14))
         self._grade_campos(corpo, [
-            (chave, self._campo(corpo, rotulo, exemplo, obrigatorio=chave in obrigatorios))
+            (chave, self._campo(corpo, rotulo, exemplo, obrigatorio=chave in obrigatorios,
+                                ajuda=AJUDA_FISCAL.get(chave)))
             for chave, rotulo, exemplo in self._CAMPOS_FISCAIS
         ], 4, self.pf)
 
@@ -1685,7 +1956,7 @@ class AppPDV(_Estilo, ctk.CTk):
         filtros.grid(row=1, column=0, sticky="ew", pady=(0, 14))
         filtros.grid_columnconfigure((0, 1, 2), weight=1)
         hoje = date.today()
-        inicio = self._campo(filtros, "Período inicial", "dd/mm/aaaa", (hoje - timedelta(days=30)).strftime("%d/%m/%Y"))
+        inicio = self._campo(filtros, "Período inicial", "dd/mm/aaaa", (hoje - timedelta(days=29)).strftime("%d/%m/%Y"))
         inicio.grid(row=0, column=0, sticky="ew", padx=(16, 6), pady=16)
         fim = self._campo(filtros, "Período final", "dd/mm/aaaa", hoje.strftime("%d/%m/%Y"))
         fim.grid(row=0, column=1, sticky="ew", padx=6, pady=16)
@@ -1694,6 +1965,17 @@ class AppPDV(_Estilo, ctk.CTk):
         self.h_inicio, self.h_fim, self.h_forma = inicio.entrada, fim.entrada, forma.entrada
         self._btn(filtros, "Aplicar filtros", self._filtrar_historico, width=140).grid(
             row=0, column=3, sticky="s", padx=(6, 16), pady=16)
+
+        # Atalhos de período: evita digitar datas no dia a dia.
+        rapidos = ctk.CTkFrame(filtros, fg_color="transparent")
+        rapidos.grid(row=1, column=0, columnspan=4, sticky="w", padx=16, pady=(0, 14))
+        self._rotulo(rapidos, "Período rápido:", 11, True, "text_soft").pack(side="left", padx=(0, 8))
+        self.h_rapidos = {}
+        for nome in self.PERIODOS_RAPIDOS:
+            b = ctk.CTkButton(rapidos, text=nome, width=10, height=32, corner_radius=9, font=self._fonte(11, True),
+                              command=lambda n=nome: self._periodo_rapido(n))
+            b.pack(side="left", padx=(0, 6))
+            self.h_rapidos[nome] = b
 
         dados = self._cartao_dados(pagina, "Vendas encontradas",
                                    direita=lambda p: self._rotulo(p, "", 20, True, "primary_900"))
@@ -1709,12 +1991,35 @@ class AppPDV(_Estilo, ctk.CTk):
         self.h_contagem = self._rodape_tabela(dados, "Vendas concluídas no período, mais recentes primeiro.")
         self._filtrar_historico()
 
+    # nome: (dias atrás do fim, quantidade de dias)
+    PERIODOS_RAPIDOS = {"Hoje": (0, 1), "Ontem": (1, 1), "Últimos 7 dias": (0, 7), "Últimos 30 dias": (0, 30)}
+
+    @staticmethod
+    def _datas_periodo(dias_atras, dias):
+        fim = date.today() - timedelta(days=dias_atras)
+        return fim - timedelta(days=dias - 1), fim
+
+    def _periodo_rapido(self, nome):
+        for entrada, dia in zip((self.h_inicio, self.h_fim), self._datas_periodo(*self.PERIODOS_RAPIDOS[nome])):
+            entrada.delete(0, tk.END)
+            entrada.insert(0, dia.strftime("%d/%m/%Y"))
+        self._filtrar_historico()
+
+    def _pintar_rapidos(self, inicio, fim):
+        """Destaca o atalho que corresponde às datas digitadas (nenhum, se for um período livre)."""
+        for nome, b in self.h_rapidos.items():
+            sel = self._datas_periodo(*self.PERIODOS_RAPIDOS[nome]) == (inicio, fim)
+            b.configure(fg_color=P["primary_800"] if sel else P["surface"], text_color="#ffffff" if sel else P["text_soft"],
+                        hover_color=P["primary_900"] if sel else P["primary_50"],
+                        border_width=0 if sel else 1, border_color=P["line"])
+
     def _filtrar_historico(self):
         try:
             inicio, fim = _data_iso(self.h_inicio.get()), _data_iso(self.h_fim.get())
         except ValueError:
             messagebox.showwarning("Data inválida", "Use datas no formato dd/mm/aaaa.")
             return
+        self._pintar_rapidos(date.fromisoformat(inicio), date.fromisoformat(fim))
         forma = self.h_forma.get()
         self._vendas_filtradas = banco.listar_vendas(inicio, fim, None if forma.startswith("Todas") else forma)
         vendas = self._vendas_filtradas
@@ -1950,6 +2255,7 @@ class AppPDV(_Estilo, ctk.CTk):
                 messagebox.showwarning("Campo obrigatório", f"Informe: {nome}.")
                 return
         banco.salvar_config_fiscal(dados)
+        self._atualizar_marca()
         self.mostrar_config()
         self._avisar("Configurações salvas com sucesso")
 
@@ -2164,8 +2470,11 @@ class TelaLogin(_Estilo, ctk.CTk):
                      corner_radius=13, fg_color=P["accent"]).pack(side="left")
         textos = ctk.CTkFrame(marca, fg_color="transparent")
         textos.pack(side="left", padx=12)
-        self._rotulo(textos, "PDV Próprio", 15, True, "#ffffff").pack(anchor="w")
-        self._rotulo(textos, "Seu negócio, no controle.", 11, cor="brand_sub").pack(anchor="w")
+        loja = _nome_loja()
+        if loja:
+            self.title(f"{loja} — Entrar")
+        self._rotulo(textos, loja or "PDV Próprio", 15, True, "#ffffff").pack(anchor="w")
+        self._rotulo(textos, "PDV Próprio" if loja else "Seu negócio, no controle.", 11, cor="brand_sub").pack(anchor="w")
 
         mensagem = ctk.CTkFrame(painel, fg_color="transparent")
         mensagem.place(x=42, rely=0.5, anchor="w")
@@ -2201,12 +2510,15 @@ class TelaLogin(_Estilo, ctk.CTk):
             entrada.configure(width=360, height=46)
         self.btn_mostrar = self._link(self.senha, "Mostrar", self._alternar_senha, 10)
         self.btn_mostrar.place(relx=1, rely=0.5, x=-8, anchor="e")
+        # Erro de login aparece aqui, embaixo da senha (sem janela pop-up para fechar).
+        self.lbl_erro = self._rotulo(card, "", 11, True, "danger", justify="left", wraplength=360)
+        self.lbl_erro.pack(anchor="w")
 
         self.lembrar = ctk.CTkCheckBox(card, text="Lembrar meu usuário neste computador", font=self._fonte(11),
                                        text_color=P["text_soft"], fg_color=P["primary_800"],
                                        hover_color=P["primary_900"], border_color=P["line_hover"],
                                        checkbox_width=18, checkbox_height=18, corner_radius=5)
-        self.lembrar.pack(anchor="w", pady=(12, 18))
+        self.lembrar.pack(anchor="w", pady=(4, 18))
         self.lembrar.select()
         self._btn(card, "Entrar no PDV", self._entrar, height=48, icone_nome="chevron", lado="right").pack(fill="x")
         self._rotulo(card, "Operação local protegida · dados guardados neste computador", 10, cor="muted").pack(pady=(18, 0))
@@ -2226,9 +2538,12 @@ class TelaLogin(_Estilo, ctk.CTk):
         usuario = banco.autenticar(login, self.senha.get())
         self.senha.delete(0, tk.END)
         if not usuario:
-            messagebox.showwarning("Acesso negado", "Usuário ou senha incorretos.")
+            self.lbl_erro.configure(text="Usuário ou senha incorretos. Confira e tente de novo.")
+            self.senha.configure(border_color=P["danger"])
             self.senha.focus()
             return
+        self.lbl_erro.configure(text="")
+        self.senha.configure(border_color=P["line"])
         if usuario.get("trocar_senha"):
             nova = self._pedir_senha("Troca de senha obrigatória", "Por segurança, defina uma nova senha")
             if not nova:
