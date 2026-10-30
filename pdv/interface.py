@@ -270,58 +270,67 @@ class _Estilo:
         """Bolinha "?" que mostra uma explicação ao passar o mouse (ou tocar)."""
         botao = ctk.CTkLabel(parent, text="?", width=16, height=16, corner_radius=8, cursor="question_arrow",
                              fg_color=P["primary_100"], text_color=P["primary_800"], font=self._fonte(10, True))
-        balao = {}  # "janela" (criada uma vez e reaproveitada), "agendado" (atraso antes de aparecer)
+        balao = {}  # "rotulo" (criado uma vez e reaproveitado), "agendado" (atraso antes de aparecer)
 
         def sob_o_mouse():
             # O CTkLabel são dois widgets (canvas + label): ir de um ao outro gera <Leave>.
             sob = botao.winfo_containing(*botao.winfo_pointerxy())
             return sob is not None and str(sob).startswith(str(botao))
 
-        def cancelar_atraso(_evento=None):
+        def visivel():
+            return "rotulo" in balao and balao["rotulo"].winfo_ismapped()
+
+        def cancelar_atraso():
             if "agendado" in balao:
                 botao.after_cancel(balao.pop("agendado"))
 
         def exibir():
+            # Desenhado dentro da própria janela (place), não num Toplevel: em tela cheia,
+            # cada janela nova por cima faz o gerenciador de janelas/compositor redesenhar
+            # tudo — a tela trava e pisca em branco.
             cancelar_atraso()
-            janela = balao.get("janela")
-            if janela is None:
-                janela = balao["janela"] = tk.Toplevel(botao, bg=P["primary_950"])
-                janela.withdraw()  # monta escondida: sem piscar um quadrado vazio
-                janela.wm_overrideredirect(True)
-                tk.Label(janela, text=texto, bg=P["primary_950"], fg="#ffffff", font=self._fonte_tk(12),
-                         wraplength=280, justify="left", padx=12, pady=9).pack()
-                janela.update_idletasks()
-            # Abaixo do "?", sem cobrir o ponteiro (balão sob o mouse = <Leave> e pisca-pisca) e dentro da tela.
-            x = min(botao.winfo_rootx(), botao.winfo_screenwidth() - janela.winfo_reqwidth() - 8)
-            y = botao.winfo_rooty() + botao.winfo_height() + 6
-            if y + janela.winfo_reqheight() > botao.winfo_screenheight():
-                y = botao.winfo_rooty() - janela.winfo_reqheight() - 6
-            janela.geometry(f"+{max(x, 0)}+{y}")
-            janela.deiconify()
-            janela.lift()
+            janela = botao.winfo_toplevel()
+            if "rotulo" not in balao:
+                balao["rotulo"] = tk.Label(janela, text=texto, bg=P["primary_950"], fg="#ffffff",
+                                           font=self._fonte_tk(12), wraplength=280, justify="left", padx=12, pady=9)
+            rotulo = balao["rotulo"]
+            rotulo.update_idletasks()
+            largura, altura = rotulo.winfo_reqwidth(), rotulo.winfo_reqheight()
+            # Abaixo do "?", sem cobrir o ponteiro (balão sob o mouse = <Leave> e pisca-pisca) e dentro da janela.
+            x = botao.winfo_rootx() - janela.winfo_rootx()
+            y = botao.winfo_rooty() - janela.winfo_rooty() + botao.winfo_height() + 6
+            if y + altura > janela.winfo_height():
+                y -= botao.winfo_height() + altura + 12
+            rotulo.place(x=max(min(x, janela.winfo_width() - largura - 8), 0), y=max(y, 0))
+            rotulo.lift()
 
         def mostrar(_evento=None):
-            if "agendado" not in balao and not (balao.get("janela") and balao["janela"].winfo_viewable()):
+            if "agendado" not in balao and not visivel():
                 balao["agendado"] = botao.after(250, exibir)  # passar o mouse de raspão não abre
 
         def esconder(_evento=None, forcar=False):
             if not forcar and sob_o_mouse():
                 return
             cancelar_atraso()
-            if balao.get("janela"):
-                balao["janela"].withdraw()
+            if "rotulo" in balao:
+                balao["rotulo"].place_forget()
 
         def clique(_evento=None):
-            janela = balao.get("janela")
-            if janela is not None and janela.winfo_viewable():
+            if visivel():
                 esconder(forcar=True)
             else:
                 exibir()
 
+        def destruir(_evento=None):
+            # O balão é filho da janela, não do "?": some junto quando a tela é refeita.
+            cancelar_atraso()
+            if "rotulo" in balao:
+                balao.pop("rotulo").destroy()
+
         botao.bind("<Enter>", mostrar)
         botao.bind("<Button-1>", clique)
         botao.bind("<Leave>", esconder)
-        botao.bind("<Destroy>", cancelar_atraso)  # o balão é filho do "?" e morre com ele
+        botao.bind("<Destroy>", destruir)
         return botao
 
     def _campo(self, parent, rotulo, placeholder="", valor="", obrigatorio=False, senha=False, ajuda=None):
